@@ -1,0 +1,28 @@
+{
+  "name": "skillsmith",
+  "version": "0.1.0",
+  "description": "Learn how you code. Generate reusable Claude Code skills from your repos.",
+  "type": "module",
+  "bin": {
+    "skillsmith": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --target node18 --clean",
+    "dev": "tsup src/cli.ts --format esm --target node18 --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": ["claude", "claude-code", "skills", "ai", "cli"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}
