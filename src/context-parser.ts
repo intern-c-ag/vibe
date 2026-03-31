@@ -22,6 +22,7 @@ export interface ParsedContextFile {
   signals: ContextSignals;
   weighted: WeightedSignal[];
   excerpt: string;
+  filterStats: { totalCandidates: number; filteredNoisy: number; retainedHigh: number; retainedMedium: number };
 }
 
 const MAX_PER_BUCKET = 16;
@@ -75,6 +76,9 @@ export function parseContextMarkdown(fileName: string, content: string): ParsedC
 
   const weighted: WeightedSignal[] = [];
 
+  let totalCandidates = 0;
+  let filteredNoisy = 0;
+
   const sections = splitIntoSections(lines);
   for (const section of sections) {
     const hint = section.heading.toLowerCase();
@@ -85,6 +89,13 @@ export function parseContextMarkdown(fileName: string, content: string): ParsedC
     for (const item of candidates) {
       const text = cleanItem(item);
       if (!text) continue;
+      totalCandidates++;
+
+      // Aggressively filter tool logs / JSON / shell noise
+      if (isNoisyCandidate(text)) {
+        filteredNoisy++;
+        continue;
+      }
 
       const forcedBucket = bucketFromHeading(hint);
       const bucket = forcedBucket ?? bucketFromText(text);
@@ -99,12 +110,16 @@ export function parseContextMarkdown(fileName: string, content: string): ParsedC
   // Sort weighted signals: high first, then medium, then low
   weighted.sort((a, b) => confidenceRank(a.confidence) - confidenceRank(b.confidence));
 
+  const retainedHigh = weighted.filter((w) => w.confidence === "high").length;
+  const retainedMedium = weighted.filter((w) => w.confidence === "medium").length;
+
   return {
     fileName,
     kind,
     signals,
     weighted,
     excerpt: normalized.slice(0, 10000),
+    filterStats: { totalCandidates, filteredNoisy, retainedHigh, retainedMedium },
   };
 }
 
@@ -209,13 +224,23 @@ export function formatSignalsForPrompt(signals: ContextSignals, weighted?: Weigh
 /**
  * Log a summary of the top extracted directives that were actually applied.
  */
-export function logAppliedDirectives(weighted: WeightedSignal[], log: (msg: string) => void): void {
+export function logAppliedDirectives(
+  weighted: WeightedSignal[],
+  log: (msg: string) => void,
+  filterStats?: ParsedContextFile["filterStats"],
+): void {
   const high = weighted.filter((w) => w.confidence === "high");
   const medium = weighted.filter((w) => w.confidence === "medium");
 
-  if (high.length === 0 && medium.length === 0) return;
+  if (high.length === 0 && medium.length === 0 && !filterStats) return;
 
-  log(`  Context weighting: ${high.length} high-confidence, ${medium.length} medium-confidence directives`);
+  if (filterStats) {
+    log(
+      `  Context directives: ${filterStats.totalCandidates} candidates → ${filterStats.filteredNoisy} noisy filtered → ${filterStats.retainedHigh} high, ${filterStats.retainedMedium} medium retained`,
+    );
+  } else {
+    log(`  Context weighting: ${high.length} high-confidence, ${medium.length} medium-confidence directives`);
+  }
   for (const w of high.slice(0, 5)) {
     log(`    ▸ [HIGH/${w.bucket}] ${w.text.slice(0, 120)}`);
   }
@@ -321,6 +346,56 @@ function cleanItem(v: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 280);
+}
+
+// ── Noise filtering ──────────────────────────────────────────────────────────
+// Heuristics to reject tool transcripts, JSON blobs, shell output, and other
+// non-directive noise that sometimes appears in session-export context files.
+
+const NOISE_PATTERNS: RegExp[] = [
+  // JSON objects / arrays (long)
+  /[{[].{60,}[}\]]/,
+  // Shell / command output markers
+  /^\s*(\$|>>>|>|#!\/|❯|λ)\s/,
+  /\b(exit code|stdout|stderr|SIGTERM|SIGKILL|errno|pid \d)\b/i,
+  // Tool metadata / function-call artifacts
+  /\b(function_call|tool_use|tool_result|<tool>|<\/tool>|<function|<result)\b/,
+  /\b(observation|action_input|action_output)\s*[:=]/i,
+  // Stack traces / file paths dominating the line
+  /(?:at\s+\S+\s+\(.*:\d+:\d+\))/,
+  /(?:\/[\w.-]+){4,}/,  // deep paths like /home/user/foo/bar/baz/qux
+  // Lines that are mostly non-alphabetic (symbols, punctuation, hex)
+  /^[^a-zA-Z]*$/,
+  // Base64 / hex blobs
+  /[A-Za-z0-9+/=]{40,}/,
+  // Log-line prefixes (timestamps + levels)
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/,
+  /^\[(DEBUG|INFO|WARN|ERROR|TRACE)\]/i,
+  // Diff / patch markers
+  /^[+-]{3}\s+(a|b)\//,
+  /^@@\s+-\d+/,
+  // HTTP / curl noise
+  /\b(HTTP\/\d|curl|wget|GET|POST|PUT|DELETE|PATCH)\s+https?:\/\//i,
+  // UUID-heavy lines (likely IDs, not directives)
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+];
+
+/**
+ * Returns true if `text` looks like tool/shell noise rather than a human directive.
+ */
+function isNoisyCandidate(text: string): boolean {
+  // Very short fragments are handled by confidence scoring, not noise filter
+  if (text.length < 8) return false;
+
+  for (const pat of NOISE_PATTERNS) {
+    if (pat.test(text)) return true;
+  }
+
+  // Ratio check: if less than 40% of chars are letters/spaces, it's noise
+  const alphaSpaceCount = (text.match(/[a-zA-Z ]/g) ?? []).length;
+  if (alphaSpaceCount / text.length < 0.4) return true;
+
+  return false;
 }
 
 function pushUnique(target: string[], value: string, max: number): void {

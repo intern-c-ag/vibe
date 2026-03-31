@@ -258,6 +258,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
     let extraContext = "";
     const parsedContextFiles: ParsedContextFile[] = [];
     const allWeightedSignals: WeightedSignal[] = [];
+    let aggregateFilterStats = { totalCandidates: 0, filteredNoisy: 0, retainedHigh: 0, retainedMedium: 0 };
     if (opts.contextFiles?.length) {
       const { readFile } = await import("node:fs/promises");
       for (const cf of opts.contextFiles) {
@@ -267,6 +268,10 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
           const parsed = parseContextMarkdown(name, content);
           parsedContextFiles.push(parsed);
           allWeightedSignals.push(...parsed.weighted);
+          aggregateFilterStats.totalCandidates += parsed.filterStats.totalCandidates;
+          aggregateFilterStats.filteredNoisy += parsed.filterStats.filteredNoisy;
+          aggregateFilterStats.retainedHigh += parsed.filterStats.retainedHigh;
+          aggregateFilterStats.retainedMedium += parsed.filterStats.retainedMedium;
 
           // Build weighted context block: structured signals first, then raw excerpt
           const signalsBlock = formatSignalsForPrompt(parsed.signals, parsed.weighted);
@@ -280,7 +285,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
 
       // Log applied directives summary
       if (allWeightedSignals.length > 0) {
-        logAppliedDirectives(allWeightedSignals, (msg) => console.log(colors.dim(msg)));
+        logAppliedDirectives(allWeightedSignals, (msg) => console.log(colors.dim(msg)), aggregateFilterStats);
       }
     }
 
