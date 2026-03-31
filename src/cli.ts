@@ -59,6 +59,7 @@ ${colors.bold("Advanced options:")}
   --force              Overwrite all existing files
   --new                Start fresh session (skip resume)
   --no-claude          Skip coding agent install and launch
+  --provider <name>    Coding agent: claude (default) or opencode
   -h, --help           Show this help
   -v, --version        Show version
 `);

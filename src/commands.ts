@@ -27,6 +27,7 @@ import {
 } from "./context-parser.js";
 import { setupProject } from "./setup.js";
 import { isClaudeInstalled, installClaude, launchClaude } from "./claude-manager.js";
+import { isOpencodeInstalled, installOpencode, launchOpencode } from "./opencode-manager.js";
 import { colors, spinner, banner, ask, confirm, table, progressBar } from "./ui.js";
 import { getSkillsDir, listSkills, getConfig, setConfig } from "./store.js";
 import {
@@ -62,7 +63,12 @@ export async function run(projectDir: string, opts: RunOptions = {}): Promise<vo
 
   // 1. Setup project
   const setupSpin = spinner("Setting up project...");
-  const result = await setupProject(projectDir, opts);
+  const result = await setupProject(projectDir, {
+    force: opts.force,
+    noClaude: opts.noClaude,
+    newSession: opts.newSession,
+    provider,
+  });
   setupSpin.succeed(
     `Set up .claude/ — ${result.agents} agents, ${result.skills} skills, ${result.commands} commands`
   );
@@ -98,7 +104,7 @@ export async function run(projectDir: string, opts: RunOptions = {}): Promise<vo
     mcpSpin.fail("MCP discovery failed (continuing)");
   }
 
-  // 4. Install & launch the selected provider
+  // 4. Install & launch selected provider
   if (!opts.noClaude) {
     await installAndLaunch(provider, projectDir, opts);
   } else {
@@ -112,28 +118,26 @@ export async function run(projectDir: string, opts: RunOptions = {}): Promise<vo
  * Saves the selection per-project.
  */
 async function pickProvider(projectDir: string, flagOverride?: string): Promise<Provider> {
-  // If flag provided or already saved, resolveProvider handles it
   const resolved = resolveProvider(projectDir, flagOverride);
 
-  // If there was a flag or a saved choice, just use it
+  // If explicitly set, saved already, or non-interactive, use resolved
   if (flagOverride || resolved !== "claude" || !isInteractive()) {
-    // resolved is authoritative when flag is set or a local/global config exists
-    // For non-interactive with no saved config, default is "claude"
     return resolved;
   }
 
-  // Check if there's an explicit saved choice (not just the fallback default)
+  // Check if local config explicitly exists
   const hasLocalChoice = (() => {
     try {
       const { readFileSync } = require("node:fs");
       const data = JSON.parse(readFileSync(join(projectDir, ".vibe", "provider.json"), "utf-8"));
       return isValidProvider(data.provider);
-    } catch { return false; }
+    } catch {
+      return false;
+    }
   })();
 
   if (hasLocalChoice) return resolved;
 
-  // Interactive prompt — ask once
   console.log(`\n${colors.bold("Provider selection:")}`);
   console.log(`  ${colors.cyan("[1]")} Claude Code`);
   console.log(`  ${colors.cyan("[2]")} Opencode\n`);
@@ -153,34 +157,36 @@ async function pickProvider(projectDir: string, flagOverride?: string): Promise<
  */
 async function installAndLaunch(provider: Provider, projectDir: string, opts: RunOptions): Promise<void> {
   if (provider === "opencode") {
-    // Check for opencode binary
-    const { commandExists } = await import("./claude-manager.js");
-    if (!commandExists("opencode")) {
-      console.log(colors.yellow("\n⚠ opencode is not installed."));
-      console.log(colors.dim("  Install: https://opencode.ai or npm i -g opencode"));
-      return;
-    }
-    console.log(`\n${colors.green("✔")} Ready. Launching Opencode...\n`);
-    const { spawn } = await import("node:child_process");
-    const child = spawn("opencode", [], { cwd: projectDir, stdio: "inherit" });
-    child.on("error", (err) => { console.error(`Failed to launch opencode: ${err.message}`); process.exit(1); });
-    child.on("exit", (code) => { process.exit(code ?? 0); });
-  } else {
-    // Claude Code (existing behaviour)
-    if (!isClaudeInstalled()) {
-      const installSpin = spinner("Installing Claude Code...");
-      const installResult = await installClaude();
+    if (!isOpencodeInstalled()) {
+      const installSpin = spinner("Installing Opencode...");
+      const installResult = await installOpencode();
       if (installResult.success) {
-        installSpin.succeed("Claude Code installed");
+        installSpin.succeed("Opencode installed");
       } else {
-        installSpin.fail(`Claude Code installation failed: ${installResult.error}`);
-        console.log(colors.dim("  Install manually: https://docs.anthropic.com/claude-code"));
+        installSpin.fail(`Opencode installation failed: ${installResult.error}`);
+        console.log(colors.dim("  Install manually: curl -fsSL https://opencode.ai/install | bash"));
         return;
       }
     }
-    console.log(`\n${colors.green("✔")} Ready. Launching Claude Code...\n`);
-    launchClaude(projectDir, { newSession: opts.newSession });
+    console.log(`\n${colors.green("✔")} Ready. Launching Opencode...\n`);
+    launchOpencode(projectDir);
+    return;
   }
+
+  // Claude Code path
+  if (!isClaudeInstalled()) {
+    const installSpin = spinner("Installing Claude Code...");
+    const installResult = await installClaude();
+    if (installResult.success) {
+      installSpin.succeed("Claude Code installed");
+    } else {
+      installSpin.fail(`Claude Code installation failed: ${installResult.error}`);
+      console.log(colors.dim("  Install manually: https://docs.anthropic.com/claude-code"));
+      return;
+    }
+  }
+  console.log(`\n${colors.green("✔")} Ready. Launching Claude Code...\n`);
+  launchClaude(projectDir, { newSession: opts.newSession });
 }
 
 /**

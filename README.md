@@ -155,10 +155,29 @@ A privacy-focused Solana + Zcash wallet for mobile.
 
 The log output will show `identity source: vibe-identity.md` so you can verify which source was used.
 
+## Using the Opencode Provider
+
+Vibe supports [Opencode](https://opencode.ai) as an alternative coding agent:
+
+```bash
+# Set up project and launch Opencode instead of Claude Code
+vibe --provider opencode
+
+# Init only (no launch)
+vibe init --provider opencode
+
+# Train works the same — skills are provider-agnostic
+vibe train .
+```
+
+When `--provider opencode` is used, vibe generates a `.opencode/` config directory alongside (or instead of) `.claude/`. Trained skills remain in the shared store and work with either provider.
+
+Opencode is installed automatically via `curl -fsSL https://opencode.ai/install | bash` if not found on PATH.
+
 ## Requirements
 
 - Node.js >= 18
-- [Claude Code](https://docs.anthropic.com/claude-code) (installed automatically if missing)
+- [Claude Code](https://docs.anthropic.com/claude-code) or [Opencode](https://opencode.ai) (installed automatically if missing)
 - `gh` CLI (only for `push`)
 
 ## Update

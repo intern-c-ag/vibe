@@ -15,10 +15,13 @@ export interface SetupResult {
   _stack: StackInfo;
 }
 
+export type Provider = 'claude' | 'opencode';
+
 export interface SetupOptions {
   force?: boolean;
   noClaude?: boolean;
   newSession?: boolean;
+  provider?: Provider;
 }
 
 export interface StackInfo {
@@ -362,7 +365,7 @@ This skill file was generated as a placeholder. Run \`claude -p\` to generate de
 // ── Main ───────────────────────────────────────────────────────────────────
 
 export async function setupProject(projectDir: string, options: SetupOptions = {}): Promise<SetupResult> {
-  const { force = false, noClaude = false } = options;
+  const { force = false, noClaude = false, provider = 'claude' } = options;
   const claudeDir = join(projectDir, '.claude');
   const stack = await detectStack(projectDir);
   const result: SetupResult = { agents: 0, skills: 0, commands: 0, hooks: 0, config: 0, mcpsInstalled: 0, _stack: stack };
@@ -502,6 +505,24 @@ export async function setupProject(projectDir: string, options: SetupOptions = {
   };
   await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
   result.config++;
+
+  // ── Opencode provider: generate .opencode/ config ──────────────────────
+  if (provider === 'opencode') {
+    const opencodeDir = join(projectDir, '.opencode');
+    await mkdirp(opencodeDir);
+
+    const opencodeConfig = {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+      instructions: `You are working on a ${stack.languages.join('/')} project.${stack.frameworks.length ? ` Frameworks: ${stack.frameworks.join(', ')}.` : ''} Follow existing conventions.`,
+      generatedAt: new Date().toISOString(),
+    };
+    const ocConfigPath = join(opencodeDir, 'config.json');
+    if (force || !(await exists(ocConfigPath))) {
+      await writeFile(ocConfigPath, JSON.stringify(opencodeConfig, null, 2) + '\n', 'utf8');
+      result.config++;
+    }
+  }
 
   return result;
 }
