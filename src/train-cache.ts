@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 
+import type { FileEntry, ProjectContext } from "./deep-scanner.js";
 import { getCacheDir } from "./store.js";
 
 export interface CachedSkillIndexEntry {
@@ -24,10 +25,11 @@ export interface TrainCacheEntry {
   fileCount: number;
   skippedCount: number;
   skills: CachedSkillIndexEntry[];
+  skillSignatures?: Record<string, string>;
   mcps?: string[];
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 const SKIP_DIRS = new Set([
   ".git", ".svn", ".hg",
@@ -169,6 +171,64 @@ export async function computeContextFingerprint(contextFiles: string[] = []): Pr
   }
 
   return hasher.digest("hex");
+}
+
+function hashFiles(files: FileEntry[]): string {
+  const hasher = createHash("sha256");
+  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
+  for (const f of sorted) {
+    hasher.update(f.path);
+    hasher.update("\0");
+    hasher.update(f.content);
+    hasher.update("\0");
+  }
+  return hasher.digest("hex");
+}
+
+export function computeSkillSignatures(ctx: ProjectContext, extraContext = ""): Record<string, string> {
+  const securityMatcher = /(auth|token|secret|password|crypto|sign|verify|permission|role|acl|middleware|jwt|oauth|session|policy|guard)/i;
+  const testMatcher = /(test|spec|__tests__|integration|e2e|playwright|vitest|jest|pytest|cargo test)/i;
+
+  const securityFiles = [
+    ...ctx.sourceFiles.filter((f) => securityMatcher.test(f.path) || securityMatcher.test(f.content.slice(0, 800))),
+    ...ctx.manifests.filter((f) => /(docker|compose|package\.json|cargo\.toml|pyproject|go\.mod|\.env)/i.test(f.path)),
+  ];
+
+  const testingFiles = [
+    ...ctx.sourceFiles.filter((f) => f.category === "test" || testMatcher.test(f.path)),
+    ...ctx.manifests.filter((f) => /package\.json|cargo\.toml|pyproject|go\.mod/i.test(f.path)),
+  ];
+
+  const baseHash = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+  return {
+    domain: baseHash([
+      ctx.identity,
+      hashFiles(ctx.docs),
+      hashFiles(ctx.references),
+      hashFiles(ctx.manifests.filter((m) => /readme|package\.json|cargo\.toml|pyproject|go\.mod/i.test(m.path))),
+      extraContext,
+    ].join("\n\n")),
+    architecture: baseHash([
+      ctx.structure.join("\n"),
+      hashFiles(ctx.manifests),
+      hashFiles(ctx.sourceFiles.map((f) => ({ ...f, content: "" }))),
+    ].join("\n\n")),
+    conventions: baseHash([
+      hashFiles(ctx.sourceFiles),
+      hashFiles(ctx.manifests.filter((m) => /eslint|biome|prettier|tsconfig|package\.json|editorconfig/i.test(m.path))),
+    ].join("\n\n")),
+    security: baseHash([
+      hashFiles(securityFiles),
+      hashFiles(ctx.docs.filter((d) => /security|threat|auth|permission|privacy/i.test(d.path))),
+      extraContext,
+    ].join("\n\n")),
+    testing: baseHash([
+      hashFiles(testingFiles),
+      ctx.stack.testing.join(","),
+      extraContext,
+    ].join("\n\n")),
+  };
 }
 
 function cachePathForRepo(repoPath: string): string {

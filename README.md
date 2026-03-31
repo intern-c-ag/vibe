@@ -31,6 +31,21 @@ cd ~/new-project && vibe
 
 Training is now local-first by default: it scans your code (skips secrets) and generates deterministic skills directly from the deep scanner output — no Claude call required.
 
+`vibe train` also uses partial cache reuse by default:
+
+```bash
+# 1) First run (no cache yet): full generation for every repo
+vibe train ~/projects/app ~/projects/api
+
+# 2) Run again with no changes: full cache hit (no regeneration)
+vibe train ~/projects/app ~/projects/api
+
+# 3) Change only one repo: partial regeneration (only changed repo regenerates)
+vibe train ~/projects/app ~/projects/api
+```
+
+Use `--force-retrain` to bypass cache and regenerate everything.
+
 If you want AI enrichment (web research + Claude-generated skills), opt in explicitly:
 
 ```bash

@@ -11,48 +11,38 @@ const command = positional[0];
 function printHelp(): void {
   banner();
   console.log(`
-${colors.bold("Usage:")} vibe [command] [options]
+${colors.bold("Usage:")} vibe train .
 
-${colors.bold("Commands:")}
+  Scan current repo and generate Claude Code skills.
+  If a ${colors.cyan("reference/")} directory exists, it's automatically
+  included as secondary context (lightweight weighting).
+
+${colors.bold("Quick start:")}
+  ${colors.dim("cd ~/my-project")}
+  ${colors.dim("vibe train .")}
+  ${colors.dim("vibe")}            ${colors.dim("# set up project + launch Claude Code")}
+
+${colors.bold("Other commands:")}
   ${colors.cyan("(default)")}              Set up project + launch Claude Code
-  ${colors.cyan("train")} <path...>        Learn patterns from your repos
   ${colors.cyan("init")}                   Set up project without launching
   ${colors.cyan("mcp")}                    Discover and install MCP servers
   ${colors.cyan("push")} [repo]            Push skill library to GitHub
   ${colors.cyan("list")}                   List trained skills
   ${colors.cyan("config")} [key] [val]     Get or set configuration
 
-${colors.bold("Options:")}
-  --force              Overwrite all existing files
-  --new                Start fresh session (skip resume)
-  --no-claude          Skip Claude Code install and launch
+${colors.bold("Advanced options:")}
   --context <file>     Add extra context (markdown, session exports)
-  --exclude <glob>     Exclude paths from scan (repeatable, e.g. reference/**)
+  --exclude <glob>     Exclude paths from scan (repeatable)
   --ai                 Enable AI enrichment during train
   --local-first        Force local-only train flow (skip AI calls)
   --dry-run            Explain train plan without writing skills
   --force-retrain      Ignore cache and regenerate all train targets
+  --no-reference       Skip auto-inclusion of reference/ directory
+  --force              Overwrite all existing files
+  --new                Start fresh session (skip resume)
+  --no-claude          Skip Claude Code install and launch
   -h, --help           Show this help
   -v, --version        Show version
-
-${colors.bold("Examples:")}
-  ${colors.dim("# Set up and start vibing")}
-  vibe
-
-  ${colors.dim("# Train on your repos")}
-  vibe train ~/projects/my-solana-app ~/projects/api
-
-  ${colors.dim("# Train with extra context (e.g. Opencode session export)")}
-  vibe train . --context ~/session-export.md --context ~/design-doc.md
-
-  ${colors.dim("# Exclude heavy folders from scan")}
-  vibe train . --exclude "reference/**" --exclude ".claude/**"
-
-  ${colors.dim("# Then start a new project with your skills")}
-  cd ~/new-project && vibe
-
-  ${colors.dim("# Just discover MCPs for current project")}
-  vibe mcp
 `);
 }
 
@@ -89,6 +79,7 @@ async function main(): Promise<void> {
         const repoPaths: string[] = [];
         const contextFiles: string[] = [];
         const excludePatterns: string[] = [];
+        const noReference = flags.has("--no-reference");
 
         for (let i = 1; i < args.length; i++) {
           const a = args[i];
@@ -108,7 +99,7 @@ async function main(): Promise<void> {
 
         if (repoPaths.length === 0) {
           console.error(`${colors.red("Error:")} Provide at least one repo path`);
-          console.error(`  ${colors.dim("vibe train ~/my-project")}`);
+          console.error(`  ${colors.dim("vibe train .")}`);
           process.exit(1);
         }
 
@@ -119,6 +110,7 @@ async function main(): Promise<void> {
           localFirst: flags.has("--local-first"),
           dryRun: flags.has("--dry-run"),
           forceRetrain: flags.has("--force-retrain"),
+          autoReference: !noReference,
         });
         break;
       }

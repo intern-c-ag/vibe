@@ -113,9 +113,11 @@ export async function generateSkillsFromLocalContext(
   outputDir: string,
   repoName: string,
   _signals?: unknown,
+  categories?: Array<"domain" | "architecture" | "conventions" | "security" | "testing">,
 ): Promise<GeneratedSkill[]> {
   const base = toKebab(repoName || ctx.name || "repo");
-  const drafts = [domainSkill(ctx), architectureSkill(ctx), conventionsSkill(ctx), securitySkill(ctx), testingSkill(ctx)];
+  const allDrafts = [domainSkill(ctx), architectureSkill(ctx), conventionsSkill(ctx), securitySkill(ctx), testingSkill(ctx)];
+  const drafts = categories?.length ? allDrafts.filter((d) => categories.includes(d.category)) : allDrafts;
   const out: GeneratedSkill[] = [];
 
   for (const draft of drafts) {

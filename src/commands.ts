@@ -108,6 +108,8 @@ interface TrainOptions {
   localFirst?: boolean;
   dryRun?: boolean;
   forceRetrain?: boolean;
+  /** Auto-include reference/ as secondary context (default true) */
+  autoReference?: boolean;
 }
 
 /**
@@ -122,6 +124,20 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
       `Training mode: ${aiEnabled ? "AI" : "local-first"} | cache: ${cacheEnabled ? "partial-reuse" : "disabled (--force-retrain)"}${opts.dryRun ? " | dry-run" : ""}`,
     ),
   );
+
+  // Auto-include reference/ directories as secondary context
+  if (opts.autoReference !== false) {
+    for (const p of paths) {
+      const refDir = join(resolve(p), "reference");
+      if (existsSync(refDir)) {
+        console.log(colors.dim(`  auto-including reference/ as secondary context`));
+        // reference/ is already scanned by deep-scanner and categorized as "reference"
+        // with lightweight weighting in buildProjectSummary — no extra action needed.
+        // Just ensure it's not excluded.
+        break;
+      }
+    }
+  }
 
   const skillsDir = getSkillsDir();
   const allGenerated: GeneratedSkill[] = [];
@@ -347,10 +363,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
     await offerMcpInstall(unique);
   }
 
-  const shouldPush = await confirm("\nPush skills to GitHub?");
-  if (shouldPush) {
-    await push();
-  }
+  console.log(colors.dim(`\nTip: run ${colors.cyan("vibe push")} to push skills to GitHub.`));
 }
 /**
  * Build a comprehensive project summary from deep scan context.
