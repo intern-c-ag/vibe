@@ -6,6 +6,7 @@
  */
 
 import type { StackInfo } from './scanner.js';
+import { withFrontmatter } from './templates.js';
 
 export interface DomainAgent {
   /** Filename without extension, e.g. "solana-security-reviewer" */
@@ -70,7 +71,10 @@ export function detectDomains(stack: StackInfo, identity?: string): Set<string> 
 // ── Agent content generators ──────────────────────────────────────────
 
 function agentSolanaSecurityReviewer(): string {
-  return `# Solana Security Reviewer
+  return withFrontmatter(
+    'solana-security-reviewer',
+    'Review Solana programs for security vulnerabilities, auditing PDAs, CPIs, and account validation',
+    `# Solana Security Reviewer
 
 You are a specialized security reviewer for Solana programs.
 
@@ -112,11 +116,14 @@ For each finding:
 3. **Description**: What the issue is
 4. **Impact**: What an attacker could do
 5. **Recommendation**: How to fix it
-`;
+`);
 }
 
 function agentZcashWalletSpecialist(): string {
-  return `# Zcash Wallet Specialist
+  return withFrontmatter(
+    'zcash-wallet-specialist',
+    'Expert in Zcash wallet development, shielded transactions, and librustzcash integration',
+    `# Zcash Wallet Specialist
 
 You are an expert in Zcash wallet development and shielded transaction protocols.
 
@@ -159,11 +166,14 @@ Provide implementation guidance with:
 1. Which crate/module to use
 2. Code snippets with proper error handling
 3. Security implications of design choices
-`;
+`);
 }
 
 function agentZkCircomEngineer(): string {
-  return `# ZK Circom Engineer
+  return withFrontmatter(
+    'zk-circom-engineer',
+    'Zero-knowledge circuit engineering with Circom, snarkjs, and proof systems',
+    `# ZK Circom Engineer
 
 You are a zero-knowledge circuit engineer specializing in Circom and snarkjs.
 
@@ -212,11 +222,14 @@ You are a zero-knowledge circuit engineer specializing in Circom and snarkjs.
 2. Constraint count estimate
 3. Security analysis (under-constrained signals)
 4. Test vectors
-`;
+`);
 }
 
 function agentMobileWalletPerformance(): string {
-  return `# Mobile Wallet Performance
+  return withFrontmatter(
+    'mobile-wallet-performance',
+    'Optimize mobile cryptocurrency wallet performance: sync times, proof generation, memory and network usage',
+    `# Mobile Wallet Performance
 
 You are a performance specialist for mobile cryptocurrency wallet applications.
 
@@ -273,7 +286,7 @@ You are a performance specialist for mobile cryptocurrency wallet applications.
 1. Identified bottleneck with profiling evidence
 2. Recommended fix with expected impact
 3. Implementation approach with platform considerations
-`;
+`);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────

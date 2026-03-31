@@ -149,6 +149,34 @@ The log output will show `identity source: vibe-identity.md` so you can verify w
 curl -fsSL https://raw.githubusercontent.com/intern-c-ag/vibe/master/install.sh | bash
 ```
 
+## Claude Code Agent Compatibility
+
+Generated agents include YAML frontmatter (`name` and `description` fields) so they appear in Claude Code's `/agents` list. The expected format is:
+
+```markdown
+---
+name: agent-name
+description: "When to use this agent"
+---
+
+# Agent Title
+
+Agent instructions...
+```
+
+Agents are written to `.claude/agents/*.md` — the standard Claude Code project agents directory. If an agent file is missing frontmatter, `vibe setup` will log a warning.
+
+### Generated Agents
+
+| Agent | Description |
+|-------|-------------|
+| `research-web` | Research best practices online before implementing |
+| `commit-manager` | Git workflow: conventional commits, PRs |
+| `tester` | Create and maintain tests |
+| `reviewer` | Code review for security, performance, quality |
+| `project-historian` | Track decisions and architecture changes |
+| *domain agents* | Auto-detected (Solana, Zcash, Circom, mobile-wallet) |
+
 ## Uninstall
 
 ```bash

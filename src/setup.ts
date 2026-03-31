@@ -187,15 +187,17 @@ async function detectStack(dir: string): Promise<StackInfo> {
 
 // ── Generators ─────────────────────────────────────────────────────────────
 
+function addFrontmatter(agentName: string, description: string, body: string): string {
+  const escaped = description.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  return `---\nname: ${agentName}\ndescription: "${escaped}"\n---\n\n${body}`;
+}
+
 function generateAgentContent(name: string, stack: StackInfo): string {
   const testFramework = stack.testing[0] || 'the project\'s test framework';
   const langs = stack.languages.join(', ') || 'the project languages';
 
   const agents: Record<string, string> = {
-    'research-web': `# Research Web Agent
-
-## Role
-Research best practices, patterns, and solutions online before implementing changes.
+    'research-web': addFrontmatter('research-web', 'Research best practices, patterns, and solutions online before implementing changes', `# Research Web Agent
 
 ## Instructions
 - Before writing code, search for current best practices (2025-2026) for ${langs}
@@ -209,12 +211,9 @@ Research best practices, patterns, and solutions online before implementing chan
 - When unsure about the best approach
 - When upgrading dependencies or migrating APIs
 - When implementing security-sensitive features
-`,
+`),
 
-    'commit-manager': `# Commit Manager Agent
-
-## Role
-Handle git commits with conventional commit format and meaningful PR descriptions.
+    'commit-manager': addFrontmatter('commit-manager', 'Handle git commits with conventional commit format and meaningful PR descriptions', `# Commit Manager Agent
 
 ## Instructions
 - Use conventional commits: feat:, fix:, chore:, docs:, refactor:, test:, perf:, ci:
@@ -227,12 +226,9 @@ Handle git commits with conventional commit format and meaningful PR description
 - When committing changes
 - When creating pull requests
 - When squashing or organizing commits
-`,
+`),
 
-    'tester': `# Tester Agent
-
-## Role
-Create and maintain tests appropriate for this project's stack.
+    'tester': addFrontmatter('tester', 'Create and maintain tests for the codebase', `# Tester Agent
 
 ## Instructions
 - Testing framework: ${testFramework}
@@ -251,12 +247,9 @@ ${stack.testing.includes('playwright') ? '- Write e2e tests with proper selector
 - After implementing new features
 - When fixing bugs (write regression test first)
 - When refactoring (ensure tests pass before and after)
-`,
+`),
 
-    'reviewer': `# Code Reviewer Agent
-
-## Role
-Review code for quality, security, performance, and adherence to project patterns.
+    'reviewer': addFrontmatter('reviewer', 'Review code for quality, security, performance, and adherence to project patterns', `# Code Reviewer Agent
 
 ## Instructions
 - Check for: security vulnerabilities, performance issues, code smells
@@ -273,10 +266,10 @@ ${stack.frameworks.includes('solana') || stack.frameworks.includes('anchor') ? '
 - Before merging PRs
 - After major refactors
 - When reviewing external contributions
-`,
+`),
   };
 
-  return agents[name] || `# ${name}\n\nAgent file.\n`;
+  return agents[name] || addFrontmatter(name, `Agent: ${name}`, `# ${name}\n\nAgent file.\n`);
 }
 
 function generateCommandContent(name: string, stack: StackInfo): string {
@@ -406,7 +399,7 @@ export async function setupProject(projectDir: string, options: SetupOptions = {
   }
 
   // 2. Generate agents (base 4 + domain-specific)
-  const agentNames = ['research-web', 'commit-manager', 'tester', 'reviewer'];
+  const agentNames = ['research-web', 'commit-manager', 'tester', 'reviewer', 'project-historian'];
   const agentsDir = join(claudeDir, 'agents');
   await mkdirp(agentsDir);
   for (const name of agentNames) {
@@ -429,6 +422,26 @@ export async function setupProject(projectDir: string, options: SetupOptions = {
     }
   } catch {
     // domain-agents module not available; skip
+  }
+
+  // Validate agent files have Claude Code-compatible frontmatter
+  try {
+    const agentFiles = await readdir(agentsDir);
+    for (const file of agentFiles) {
+      if (!file.endsWith('.md')) continue;
+      const raw = await readFile(join(agentsDir, file), 'utf8');
+      if (!raw.startsWith('---')) {
+        console.warn(`⚠ Agent ${file} missing YAML frontmatter — may not appear in Claude Code /agents`);
+      } else {
+        const endIdx = raw.indexOf('---', 3);
+        const fm = endIdx > 0 ? raw.slice(3, endIdx) : '';
+        if (!fm.includes('name:') || !fm.includes('description:')) {
+          console.warn(`⚠ Agent ${file} frontmatter missing name/description — may not appear in Claude Code /agents`);
+        }
+      }
+    }
+  } catch {
+    // validation is best-effort
   }
 
   const skillDefs = getSkillsForStack(stack);

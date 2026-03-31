@@ -33,14 +33,30 @@ function stackList(stack: StackInfo): string {
   return parts.length ? parts.join(', ') : 'this project';
 }
 
+// ─── Agent Frontmatter Helper ──────────────────────────────
+
+/**
+ * Wrap agent markdown content with YAML frontmatter for Claude Code
+ * `/agents` discoverability.  Claude Code parses `name` and `description`
+ * from the frontmatter block.
+ */
+export function withFrontmatter(
+  name: string,
+  description: string,
+  body: string,
+): string {
+  const escaped = description.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  return `---\nname: ${name}\ndescription: "${escaped}"\n---\n\n${body}`;
+}
+
 // ─── AGENTS ────────────────────────────────────────────────
 
 function agentResearchWeb(stack: StackInfo): string {
   const techs = stackList(stack);
-  return `# Research Web Agent
-
-## Role
-Research best practices, patterns, and solutions online before implementing changes.
+  return withFrontmatter(
+    'research-web',
+    'Research best practices, patterns, and solutions online before implementing changes',
+    `# Research Web Agent
 
 ## When to Use
 - Before starting a new feature or refactor
@@ -87,13 +103,14 @@ This project uses **${techs}**. Prioritize sources specific to these technologie
 - Prefer recent content (< 2 years old)
 - Flag deprecated patterns explicitly
 - If docs conflict, note the discrepancy
-`;
+`);
 }
 
 function agentCommitManager(_stack: StackInfo): string {
-  return `# Commit Manager Agent
-
-## Role
+  return withFrontmatter(
+    'commit-manager',
+    'Handle git workflow: staging, conventional commits, branch naming, and PR descriptions',
+    `# Commit Manager Agent
 Handle git workflow: staging, conventional commits, branch naming, and PR descriptions.
 
 ## Conventional Commits
@@ -167,7 +184,7 @@ Fixes #89
 3. Write conventional commit message
 4. If multiple logical changes, make multiple commits
 5. Push to feature branch
-`;
+`);
 }
 
 function agentTester(stack: StackInfo): string {
@@ -433,10 +450,10 @@ func TestCreateUser(t *testing.T) {
 - Example: \`test_calculateTotal_withDiscount_returnsReducedPrice\``;
   }
 
-  return `# Tester Agent
-
-## Role
-Create and maintain tests for the codebase. Ensure good coverage of business logic, edge cases, and integration points.
+  return withFrontmatter(
+    'tester',
+    'Create and maintain tests for the codebase. Ensure good coverage of business logic, edge cases, and integration points.',
+    `# Tester Agent
 
 ${testContent}
 
@@ -454,7 +471,7 @@ ${testContent}
 - Utilities/helpers: 90%+
 - UI components: 60%+ (focus on behavior)
 - Generated code: skip
-`;
+`);
 }
 
 function agentReviewer(stack: StackInfo): string {
@@ -515,10 +532,10 @@ function agentReviewer(stack: StackInfo): string {
     ? `## Stack-Specific Concerns\n\n${concerns.join('\n\n')}`
     : '';
 
-  return `# Code Reviewer Agent
-
-## Role
-Review code for security, performance, readability, and correctness.
+  return withFrontmatter(
+    'reviewer',
+    'Review code for security, performance, readability, and correctness',
+    `# Code Reviewer Agent
 
 ## Review Checklist
 
@@ -568,7 +585,50 @@ ${stackConcerns}
 ### ✅ Good
 - [Things done well — always include positive feedback]
 \`\`\`
-`;
+`);
+}
+
+function agentProjectHistorian(_stack: StackInfo): string {
+  return withFrontmatter(
+    'project-historian',
+    'Track project decisions, architecture changes, and institutional knowledge over time',
+    `# Project Historian
+
+## When to Use
+- When making significant architectural decisions
+- When someone asks "why was this done this way?"
+- When onboarding new contributors to the project
+- When reviewing the evolution of a module or feature
+
+## Instructions
+- Maintain a decision log in \`.claude/docs/decisions/\`
+- Use ADR (Architecture Decision Record) format
+- Track key decisions: technology choices, patterns adopted, trade-offs made
+- Cross-reference related decisions and code changes
+- Summarize project evolution when asked
+
+## ADR Format
+\`\`\`markdown
+# ADR-NNN: Title
+
+## Status
+Accepted | Superseded | Deprecated
+
+## Context
+What prompted this decision?
+
+## Decision
+What was decided?
+
+## Consequences
+What are the trade-offs?
+\`\`\`
+
+## Rules
+- Never delete or modify existing ADRs — supersede them
+- Link ADRs to relevant commits or PRs when possible
+- Keep summaries concise but complete
+`);
 }
 
 // ─── SKILLS ────────────────────────────────────────────────
@@ -2033,6 +2093,7 @@ export function getTemplates(stack: StackInfo): Templates {
     'commit-manager.md': agentCommitManager(stack),
     'tester.md': agentTester(stack),
     'reviewer.md': agentReviewer(stack),
+    'project-historian.md': agentProjectHistorian(stack),
   };
 
   // Domain-specific agents (auto-detected from stack signals)
