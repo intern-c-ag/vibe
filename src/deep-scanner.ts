@@ -23,6 +23,8 @@ export interface ProjectContext {
   totalScanned: number;
   /** Total files skipped */
   totalSkipped: number;
+  /** Skip reasons summary */
+  skipReasons: Record<string, number>;
 }
 
 export interface FileEntry {
@@ -199,6 +201,11 @@ export async function deepScan(
   const absRoot = join(projectDir);
   const name = basename(absRoot);
   const stats = { scanned: 0, skipped: 0, total: 0 };
+  const skipReasons = new Map<string, number>();
+  const markSkip = (reason: string) => {
+    stats.skipped++;
+    skipReasons.set(reason, (skipReasons.get(reason) || 0) + 1);
+  };
 
   const sourceFiles: FileEntry[] = [];
   const docs: FileEntry[] = [];
@@ -219,7 +226,7 @@ export async function deepScan(
 
     // Skip check
     if (shouldSkipFile(fileName, relPath)) {
-      stats.skipped++;
+      markSkip("path policy");
       onProgress?.(relPath, stats);
       continue;
     }
@@ -231,19 +238,19 @@ export async function deepScan(
       // Skip binary files (check for null bytes in first 512 bytes)
       const head = buf.subarray(0, 512);
       if (head.includes(0)) {
-        stats.skipped++;
+        markSkip("binary");
         onProgress?.(relPath, stats);
         continue;
       }
       content = buf.toString("utf-8");
     } catch {
-      stats.skipped++;
+      markSkip("read error");
       continue;
     }
 
     // Sensitive content check
     if (hasSensitiveContent(content)) {
-      stats.skipped++;
+      markSkip("sensitive content");
       onProgress?.(relPath, stats);
       continue;
     }
@@ -294,6 +301,7 @@ export async function deepScan(
     stack,
     totalScanned: stats.scanned,
     totalSkipped: stats.skipped,
+    skipReasons: Object.fromEntries(skipReasons.entries()),
   };
 }
 

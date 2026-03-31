@@ -29,13 +29,35 @@ vibe train ~/projects/solana-app ~/projects/api-server
 cd ~/new-project && vibe
 ```
 
-Training scans your code (skips secrets), searches the web for current best practices, and generates skills that blend your patterns with what's actually recommended in 2025-2026. Your code isn't treated as gospel.
+Training is now local-first by default: it scans your code (skips secrets) and generates deterministic skills directly from the deep scanner output — no Claude call required.
+
+If you want AI enrichment (web research + Claude-generated skills), opt in explicitly:
+
+```bash
+vibe train . --ai
+```
+
+You can also add multiple external context files (docs or Opencode/Claude markdown exports):
+
+```bash
+# Local mode: parsed context signals feed deterministic skill generation
+vibe train . \
+  --context ~/exports/opencode-session.md \
+  --context ~/docs/architecture-notes.md
+
+# AI mode: same parsed signals are injected into the Claude prompt
+vibe train . --ai \
+  --context ~/exports/claude-session.md \
+  --context ~/docs/roadmap.md
+```
+
+Session-style markdown exports are parsed for structured signals (decisions, conventions, architecture notes, TODOs, tooling/workflow). Plain markdown gracefully falls back to raw excerpt context.
 
 ### All commands
 
 ```
 vibe                     Set up project + launch Claude Code
-vibe train <path...>     Learn patterns from your repos
+vibe train <path...>     Learn patterns from your repos (local mode by default)
 vibe init                Set up project without launching
 vibe mcp                 Discover and install MCP servers
 vibe push [repo]         Push skill library to GitHub
@@ -46,6 +68,9 @@ vibe config [key] [val]  Get or set configuration
 ### Flags
 
 ```
+--ai                 Use Claude + web research during `vibe train`
+--context <file>     Add extra context file (repeatable)
+--force-retrain      Ignore cache and force skill regeneration (train only)
 --force              Overwrite existing files
 --new                Fresh session (skip resume)
 --no-claude          Skip Claude Code install/launch

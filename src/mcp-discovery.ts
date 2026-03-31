@@ -278,19 +278,24 @@ async function aiDiscover(stack: StackInfo): Promise<McpServer[]> {
   }
 }
 
-export async function discoverMcps(stack: StackInfo): Promise<McpServer[]> {
+export async function discoverMcps(
+  stack: StackInfo,
+  opts: { enableAi?: boolean } = {},
+): Promise<McpServer[]> {
   // 0. Check what's already installed
   const installed = new Set(await listInstalledMcps());
 
   // 1. Match built-ins to stack
   const matched = matchBuiltIns(stack);
 
-  // 2. AI-powered discovery (best-effort, parallel)
+  // 2. AI-powered discovery (best-effort, optional)
   let aiResults: McpServer[] = [];
-  try {
-    aiResults = await aiDiscover(stack);
-  } catch {
-    // non-fatal
+  if (opts.enableAi !== false) {
+    try {
+      aiResults = await aiDiscover(stack);
+    } catch {
+      // non-fatal
+    }
   }
 
   // 3. Merge and dedup by name (built-in wins)

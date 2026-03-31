@@ -2,13 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, basename } from "path";
 import { homedir } from "os";
 
-const CONFIG_DIR = join(homedir(), ".config", "skillsmith");
+const CONFIG_DIR = join(homedir(), ".config", "vibe");
 const SKILLS_DIR = join(CONFIG_DIR, "skills");
+const CACHE_DIR = join(CONFIG_DIR, "cache");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 export function ensureDirs(): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
   if (!existsSync(SKILLS_DIR)) mkdirSync(SKILLS_DIR, { recursive: true });
+  if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
 }
 
 export function getSkillsDir(): string {
@@ -19,6 +21,11 @@ export function getSkillsDir(): string {
 export function getConfigDir(): string {
   ensureDirs();
   return CONFIG_DIR;
+}
+
+export function getCacheDir(): string {
+  ensureDirs();
+  return CACHE_DIR;
 }
 
 export interface SkillEntry {

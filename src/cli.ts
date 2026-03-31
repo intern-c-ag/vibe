@@ -27,6 +27,9 @@ ${colors.bold("Options:")}
   --new                Start fresh session (skip resume)
   --no-claude          Skip Claude Code install and launch
   --context <file>     Add extra context (markdown, session exports)
+  --ai                 Enable AI enrichment during train
+  --local-first        Force local-only train flow (skip AI calls)
+  --dry-run            Explain train plan without writing skills
   -h, --help           Show this help
   -v, --version        Show version
 
@@ -91,7 +94,12 @@ async function main(): Promise<void> {
             i++; // skip next
           }
         }
-        await train(paths.map(p => resolve(p)), { contextFiles });
+        await train(paths.map(p => resolve(p)), {
+          contextFiles,
+          ai: flags.has("--ai"),
+          localFirst: flags.has("--local-first"),
+          dryRun: flags.has("--dry-run"),
+        });
         break;
       }
       case "init": {

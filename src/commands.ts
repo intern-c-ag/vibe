@@ -94,6 +94,9 @@ export async function init(projectDir: string, opts: RunOptions = {}): Promise<v
 
 interface TrainOptions {
   contextFiles?: string[];
+  ai?: boolean;
+  localFirst?: boolean;
+  dryRun?: boolean;
 }
 
 /**
@@ -101,6 +104,8 @@ interface TrainOptions {
  */
 export async function train(paths: string[], opts: TrainOptions = {}): Promise<void> {
   banner();
+  const aiEnabled = Boolean(opts.ai) && !opts.localFirst;
+  console.log(colors.dim(`Training mode: ${aiEnabled ? "AI" : "local-first"}${opts.dryRun ? " | dry-run" : ""}`));
   const skillsDir = getSkillsDir();
   const allGenerated: GeneratedSkill[] = [];
   const allMcps: McpServer[] = [];
@@ -130,9 +135,9 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
       console.log(colors.dim(`    Identity: ${preview}...`));
     }
 
-    // 2. Research current best practices (only if frameworks detected — skip for pure languages)
+    // 2. Research current best practices (AI mode only)
     let research;
-    if (context.stack.frameworks.length > 0) {
+    if (aiEnabled && context.stack.frameworks.length > 0) {
       const resSpin = spinner(
         `Researching best practices for ${context.stack.frameworks.join(", ")}...`
       );
@@ -148,7 +153,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
     // 3. MCP discovery
     const mcpSpin = spinner("Discovering MCP servers...");
     try {
-      const mcps = await discoverMcps(context.stack);
+      const mcps = await discoverMcps(context.stack, { enableAi: aiEnabled });
       allMcps.push(...mcps);
       mcpSpin.succeed(`Found ${mcps.length} relevant MCP server(s)`);
     } catch {
@@ -171,13 +176,35 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
       }
     }
 
+    const signalCount = extractContextSignals(extraContext);
+    const plannedSkills = plannedSkillsFor(repoName, context, aiEnabled);
+
     // 5. Generate skills from deep context
+    if (opts.dryRun) {
+      printDryRunReport({
+        repoName,
+        context,
+        contextFiles: opts.contextFiles ?? [],
+        signalCount,
+        aiEnabled,
+        cacheDecision: "miss",
+        plannedSkills,
+        mcpSuggestions: allMcps.map((m) => ({ name: m.name, reason: m.description })),
+      });
+      continue;
+    }
+
     const genSpin = spinner(`Generating skills for ${repoName}...`);
-    const projectSummary = buildProjectSummary(context) + extraContext;
+    const projectSummary = buildProjectSummary(context) + (aiEnabled ? extraContext : "");
     const generated = await generateSkillsFromContext(projectSummary, context.stack, skillsDir, repoName, research);
     genSpin.succeed(`Generated ${generated.length} skill(s)`);
 
     allGenerated.push(...generated);
+  }
+
+  if (opts.dryRun) {
+    console.log(colors.green("\n✔ Dry-run complete. No skills were written."));
+    return;
   }
 
   if (allGenerated.length === 0) {
@@ -497,6 +524,70 @@ export function config(key?: string, value?: string): void {
 }
 
 // --- Helpers ---
+
+type DrySkillPlan = { name: string; reason: string };
+
+function plannedSkillsFor(repoName: string, context: ProjectContext, aiEnabled: boolean): DrySkillPlan[] {
+  const base = repoName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  if (aiEnabled) {
+    return [
+      { name: `${base}-domain-notes`, reason: "AI synthesis from docs + source" },
+      { name: `${base}-architecture-notes`, reason: "AI infers boundaries from structure and manifests" },
+      { name: `${base}-coding-conventions`, reason: "AI combines observed style with best practices" },
+      { name: `${base}-security`, reason: "AI highlights security-sensitive paths and anti-patterns" },
+    ];
+  }
+  return [
+    { name: `${base}-domain`, reason: "Local scan of identity/docs" },
+    { name: `${base}-architecture`, reason: "Local scan of structure/manifests" },
+    { name: `${base}-conventions`, reason: "Local scan of source patterns" },
+    { name: `${base}-security`, reason: "Local scan of sensitive areas" },
+    { name: `${base}-testing`, reason: `Detected testing tools: ${context.stack.testing.join(", ") || "none"}` },
+  ];
+}
+
+function extractContextSignals(contextBlock: string): number {
+  if (!contextBlock.trim()) return 0;
+  const matches = contextBlock.match(/\b(decision|convention|architecture|todo|workflow|pattern|security)\b/gi);
+  return matches ? matches.length : 0;
+}
+
+function printDryRunReport(input: {
+  repoName: string;
+  context: ProjectContext;
+  contextFiles: string[];
+  signalCount: number;
+  aiEnabled: boolean;
+  cacheDecision: "hit" | "miss";
+  plannedSkills: DrySkillPlan[];
+  mcpSuggestions: Array<{ name: string; reason: string }>;
+}): void {
+  const topSkips = Object.entries(input.context.skipReasons || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k, v]) => `${k} (${v})`)
+    .join(", ");
+
+  console.log(colors.bold(`\n🧪 Dry-run: ${input.repoName}`));
+  console.log(colors.dim(`  cache: ${input.cacheDecision}`));
+  console.log(colors.dim(`  files: scanned=${input.context.totalScanned}, skipped=${input.context.totalSkipped}${topSkips ? ` | top skip reasons: ${topSkips}` : ""}`));
+  console.log(colors.dim(`  stack: languages=${input.context.stack.languages.join(", ") || "unknown"}; frameworks=${input.context.stack.frameworks.join(", ") || "none"}`));
+  console.log(colors.dim(`  context: loaded=${input.contextFiles.length}, extracted signals≈${input.signalCount}`));
+  console.log(colors.dim(`  mode: ${input.aiEnabled ? "AI enabled" : "local-first"}`));
+  console.log(colors.dim("  planned skills:"));
+  input.plannedSkills.forEach((s) => console.log(colors.dim(`    - ${s.name}: ${s.reason}`)));
+  if (input.mcpSuggestions.length > 0) {
+    console.log(colors.dim("  MCP suggestions:"));
+    const seen = new Set<string>();
+    for (const m of input.mcpSuggestions) {
+      if (seen.has(m.name)) continue;
+      seen.add(m.name);
+      console.log(colors.dim(`    - ${m.name}: ${m.reason || "relevant to stack"}`));
+    }
+  } else {
+    console.log(colors.dim("  MCP suggestions: none"));
+  }
+}
 
 function dedup(mcps: McpServer[]): McpServer[] {
   const seen = new Set<string>();
