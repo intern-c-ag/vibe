@@ -33,10 +33,12 @@ main() {
 
   info "Installing dependencies..."
   cd "$INSTALL_DIR"
-  npm install --silent --no-fund --no-audit 2>/dev/null
+  npm install --silent --no-fund --no-audit
 
   info "Building..."
-  npx --yes tsup src/cli.ts --format esm --target node18 --clean --silent 2>/dev/null
+  if ! npm run -s build; then
+    err "Build failed. Run: cd $INSTALL_DIR && npm run build"
+  fi
 
   mkdir -p "$BIN_DIR"
   cat > "$BIN_DIR/vibe" << 'WRAPPER'
