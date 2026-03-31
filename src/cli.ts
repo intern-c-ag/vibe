@@ -27,9 +27,11 @@ ${colors.bold("Options:")}
   --new                Start fresh session (skip resume)
   --no-claude          Skip Claude Code install and launch
   --context <file>     Add extra context (markdown, session exports)
+  --exclude <glob>     Exclude paths from scan (repeatable, e.g. reference/**)
   --ai                 Enable AI enrichment during train
   --local-first        Force local-only train flow (skip AI calls)
   --dry-run            Explain train plan without writing skills
+  --force-retrain      Ignore cache and regenerate all train targets
   -h, --help           Show this help
   -v, --version        Show version
 
@@ -42,6 +44,9 @@ ${colors.bold("Examples:")}
 
   ${colors.dim("# Train with extra context (e.g. Opencode session export)")}
   vibe train . --context ~/session-export.md --context ~/design-doc.md
+
+  ${colors.dim("# Exclude heavy folders from scan")}
+  vibe train . --exclude "reference/**" --exclude ".claude/**"
 
   ${colors.dim("# Then start a new project with your skills")}
   cd ~/new-project && vibe
@@ -80,25 +85,40 @@ async function main(): Promise<void> {
         break;
       }
       case "train": {
-        const paths = positional.slice(1);
-        if (paths.length === 0) {
+        // Parse train args robustly so option values are NOT treated as repo paths
+        const repoPaths: string[] = [];
+        const contextFiles: string[] = [];
+        const excludePatterns: string[] = [];
+
+        for (let i = 1; i < args.length; i++) {
+          const a = args[i];
+          if (a === "--context" && args[i + 1]) {
+            contextFiles.push(resolve(args[i + 1]));
+            i++;
+            continue;
+          }
+          if (a === "--exclude" && args[i + 1]) {
+            excludePatterns.push(args[i + 1]);
+            i++;
+            continue;
+          }
+          if (a.startsWith("-")) continue;
+          repoPaths.push(resolve(a));
+        }
+
+        if (repoPaths.length === 0) {
           console.error(`${colors.red("Error:")} Provide at least one repo path`);
           console.error(`  ${colors.dim("vibe train ~/my-project")}`);
           process.exit(1);
         }
-        // Collect --context files
-        const contextFiles: string[] = [];
-        for (let i = 0; i < args.length; i++) {
-          if (args[i] === "--context" && args[i + 1]) {
-            contextFiles.push(resolve(args[i + 1]));
-            i++; // skip next
-          }
-        }
-        await train(paths.map(p => resolve(p)), {
+
+        await train(repoPaths, {
           contextFiles,
+          excludePatterns,
           ai: flags.has("--ai"),
           localFirst: flags.has("--local-first"),
           dryRun: flags.has("--dry-run"),
+          forceRetrain: flags.has("--force-retrain"),
         });
         break;
       }

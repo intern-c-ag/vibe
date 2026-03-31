@@ -4,8 +4,17 @@ import { basename, join, resolve } from "node:path";
 
 import { scanRepo } from "./scanner.js";
 import { deepScan, type ProjectContext } from "./deep-scanner.js";
-import { generateSkills, type GeneratedSkill } from "./generator.js";
+import { type GeneratedSkill } from "./generator.js";
+import { generateSkillsFromLocalContext } from "./local-generator.js";
 import { researchStack } from "./research.js";
+import {
+  computeContextFingerprint,
+  computeRepoFingerprint,
+  computeSkillSignatures,
+  isCachedSkillsIndexUsable,
+  loadTrainCache,
+  saveTrainCache,
+} from "./train-cache.js";
 import { discoverMcps, installMcp, type McpServer } from "./mcp-discovery.js";
 import { setupProject } from "./setup.js";
 import { isClaudeInstalled, installClaude, launchClaude } from "./claude-manager.js";
@@ -94,9 +103,11 @@ export async function init(projectDir: string, opts: RunOptions = {}): Promise<v
 
 interface TrainOptions {
   contextFiles?: string[];
+  excludePatterns?: string[];
   ai?: boolean;
   localFirst?: boolean;
   dryRun?: boolean;
+  forceRetrain?: boolean;
 }
 
 /**
@@ -105,62 +116,79 @@ interface TrainOptions {
 export async function train(paths: string[], opts: TrainOptions = {}): Promise<void> {
   banner();
   const aiEnabled = Boolean(opts.ai) && !opts.localFirst;
-  console.log(colors.dim(`Training mode: ${aiEnabled ? "AI" : "local-first"}${opts.dryRun ? " | dry-run" : ""}`));
+  const cacheEnabled = !opts.forceRetrain;
+  console.log(
+    colors.dim(
+      `Training mode: ${aiEnabled ? "AI" : "local-first"} | cache: ${cacheEnabled ? "partial-reuse" : "disabled (--force-retrain)"}${opts.dryRun ? " | dry-run" : ""}`,
+    ),
+  );
+
   const skillsDir = getSkillsDir();
   const allGenerated: GeneratedSkill[] = [];
   const allMcps: McpServer[] = [];
+  let globalHits = 0;
+  let globalMisses = 0;
+  let totalReused = 0;
+  let totalRegenerated = 0;
 
   for (const p of paths) {
     const repoPath = resolve(p);
     const repoName = basename(repoPath);
 
-    // 1. Deep scan — reads every file, shows progress
+    const contextFingerprint = await computeContextFingerprint(opts.contextFiles ?? []);
+    const cached = cacheEnabled ? loadTrainCache(repoPath) : null;
+    const fp = await computeRepoFingerprint(repoPath);
+
+    const globalHit =
+      cacheEnabled &&
+      Boolean(cached) &&
+      cached?.fingerprint === fp.fingerprint &&
+      cached?.contextFingerprint === contextFingerprint &&
+      isCachedSkillsIndexUsable(cached.skills);
+
+    if (globalHit) {
+      globalHits++;
+      console.log(colors.green(`\n🟢 Cache global hit: ${repoName}`));
+      const reusedSkills = cached!.skills.map((s) => ({
+        name: s.name,
+        path: join(s.path, "SKILL.md"),
+        description: s.description ?? "",
+        category: s.category ?? "",
+      }));
+      allGenerated.push(...reusedSkills);
+      totalReused += reusedSkills.length;
+      console.log(colors.dim(`  per-skill: regenerated=0 reused=${reusedSkills.length}`));
+      if (cached?.mcps?.length) {
+        allMcps.push(
+          ...cached.mcps.map((name) => ({
+            name,
+            description: "Cached MCP suggestion",
+            installCmd: "",
+          } as McpServer)),
+        );
+      }
+      continue;
+    }
+
+    globalMisses++;
+    console.log(colors.yellow(`\n🟡 Cache global miss: ${repoName}`));
+
     console.log(colors.bold(`\n📂 Scanning ${repoName}...\n`));
-    const context = await deepScan(repoPath, (file, stats) => {
-      const done = stats.scanned + stats.skipped;
-      const bar = progressBar(done, stats.total);
-      const truncFile = file.length > 50 ? "..." + file.slice(-47) : file;
-      const line = `  ${bar}  ${colors.cyan(truncFile)}`;
-      process.stdout.write(`\r\x1b[K${line.slice(0, process.stdout.columns || 120)}`);
-    });
+    const context = await deepScan(
+      repoPath,
+      (file, stats) => {
+        const done = stats.scanned + stats.skipped;
+        const bar = progressBar(done, stats.total);
+        const truncFile = file.length > 50 ? "..." + file.slice(-47) : file;
+        const line = `  ${bar}  ${colors.cyan(truncFile)}`;
+        process.stdout.write(`\r\x1b[K${line.slice(0, process.stdout.columns || 120)}`);
+      },
+      { excludePatterns: opts.excludePatterns ?? [] },
+    );
     process.stdout.write(`\r\x1b[K`);
 
     console.log(colors.green(`  ✔ ${context.totalScanned} files read, ${context.totalSkipped} skipped`));
-    console.log(colors.dim(`    Languages: ${context.stack.languages.join(", ")}`));
-    console.log(colors.dim(`    Frameworks: ${context.stack.frameworks.join(", ") || "none"}`));
-    console.log(colors.dim(`    Docs: ${context.docs.length} files | References: ${context.references.length} files | Source: ${context.sourceFiles.length} files`));
 
-    if (context.identity) {
-      const preview = context.identity.split("\n").slice(0, 3).join(" ").slice(0, 200);
-      console.log(colors.dim(`    Identity: ${preview}...`));
-    }
-
-    // 2. Research current best practices (AI mode only)
-    let research;
-    if (aiEnabled && context.stack.frameworks.length > 0) {
-      const resSpin = spinner(
-        `Researching best practices for ${context.stack.frameworks.join(", ")}...`
-      );
-      try {
-        research = await researchStack(context.stack, repoName);
-        resSpin.succeed(`Found ${research.length} research topic(s)`);
-      } catch {
-        resSpin.fail("Research failed (continuing without web context)");
-        research = undefined;
-      }
-    }
-
-    // 3. MCP discovery
-    const mcpSpin = spinner("Discovering MCP servers...");
-    try {
-      const mcps = await discoverMcps(context.stack, { enableAi: aiEnabled });
-      allMcps.push(...mcps);
-      mcpSpin.succeed(`Found ${mcps.length} relevant MCP server(s)`);
-    } catch {
-      mcpSpin.fail("MCP discovery failed (continuing)");
-    }
-
-    // 4. Load extra context files
     let extraContext = "";
     if (opts.contextFiles?.length) {
       const { readFile } = await import("node:fs/promises");
@@ -176,10 +204,34 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
       }
     }
 
+    let research;
+    if (aiEnabled && context.stack.frameworks.length > 0) {
+      const resSpin = spinner(`Researching best practices for ${context.stack.frameworks.join(", ")}...`);
+      try {
+        research = await researchStack(context.stack, repoName);
+        resSpin.succeed(`Found ${research.length} research topic(s)`);
+      } catch {
+        resSpin.fail("Research failed (continuing without web context)");
+      }
+    }
+
+    const mcpSpin = spinner("Discovering MCP servers...");
+    let repoMcps: McpServer[] = [];
+    try {
+      repoMcps = await discoverMcps(context.stack, { enableAi: aiEnabled });
+      allMcps.push(...repoMcps);
+      mcpSpin.succeed(`Found ${repoMcps.length} relevant MCP server(s)`);
+    } catch {
+      mcpSpin.fail("MCP discovery failed (continuing)");
+    }
+
+    const plannedCategories = aiEnabled
+      ? (["domain", "architecture", "conventions", "security"] as const)
+      : (["domain", "architecture", "conventions", "security", "testing"] as const);
+
     const signalCount = extractContextSignals(extraContext);
     const plannedSkills = plannedSkillsFor(repoName, context, aiEnabled);
 
-    // 5. Generate skills from deep context
     if (opts.dryRun) {
       printDryRunReport({
         repoName,
@@ -187,19 +239,87 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
         contextFiles: opts.contextFiles ?? [],
         signalCount,
         aiEnabled,
-        cacheDecision: "miss",
+        cacheDecision: globalHit ? "hit" : "miss",
         plannedSkills,
         mcpSuggestions: allMcps.map((m) => ({ name: m.name, reason: m.description })),
       });
       continue;
     }
 
-    const genSpin = spinner(`Generating skills for ${repoName}...`);
-    const projectSummary = buildProjectSummary(context) + (aiEnabled ? extraContext : "");
-    const generated = await generateSkillsFromContext(projectSummary, context.stack, skillsDir, repoName, research);
-    genSpin.succeed(`Generated ${generated.length} skill(s)`);
+    const currentSignatures = computeSkillSignatures(context, extraContext);
+    const reusableByCategory = new Map<string, GeneratedSkill>();
 
-    allGenerated.push(...generated);
+    if (cacheEnabled && cached && isCachedSkillsIndexUsable(cached.skills) && cached.skillSignatures) {
+      for (const category of plannedCategories) {
+        const sigMatch = cached.skillSignatures[category] === currentSignatures[category];
+        if (!sigMatch) continue;
+        const entry = cached.skills.find((s) => s.category === category);
+        if (!entry) continue;
+        reusableByCategory.set(category, {
+          name: entry.name,
+          path: join(entry.path, "SKILL.md"),
+          description: entry.description ?? "",
+          category: entry.category ?? category,
+        });
+      }
+    }
+
+    const regenerateCategories = plannedCategories.filter((c) => !reusableByCategory.has(c));
+    const regeneratedSkills: GeneratedSkill[] = [];
+
+    if (regenerateCategories.length > 0) {
+      const genSpin = spinner(`Generating ${regenerateCategories.length} changed skill(s) for ${repoName}...`);
+      if (aiEnabled) {
+        const projectSummary = buildProjectSummary(context) + extraContext;
+        regeneratedSkills.push(
+          ...(await generateSkillsFromContext(
+            projectSummary,
+            context.stack,
+            skillsDir,
+            repoName,
+            research,
+            [...regenerateCategories] as Array<"domain" | "architecture" | "conventions" | "security">,
+          )),
+        );
+      } else {
+        regeneratedSkills.push(
+          ...(await generateSkillsFromLocalContext(context, skillsDir, repoName, undefined, [...regenerateCategories])),
+        );
+      }
+      genSpin.succeed(`Generated ${regeneratedSkills.length} skill(s)`);
+    }
+
+    const reusedSkills = [...reusableByCategory.values()];
+    totalRegenerated += regeneratedSkills.length;
+    totalReused += reusedSkills.length;
+
+    console.log(colors.dim(`  per-skill: regenerated=${regeneratedSkills.length} reused=${reusedSkills.length}`));
+
+    const combined = [...regeneratedSkills, ...reusedSkills];
+    allGenerated.push(...combined);
+
+    try {
+      saveTrainCache(repoPath, {
+        repoPath,
+        repoName,
+        fingerprint: fp.fingerprint,
+        contextFingerprint,
+        generatedAt: new Date().toISOString(),
+        fileCount: fp.fileCount,
+        skippedCount: fp.skippedCount,
+        skills: combined.map((s) => ({
+          name: s.name,
+          description: s.description,
+          category: s.category,
+          path: join(skillsDir, s.name),
+          sourceRepo: repoName,
+        })),
+        skillSignatures: Object.fromEntries(plannedCategories.map((c) => [c, currentSignatures[c]])),
+        mcps: dedup(repoMcps).map((m) => m.name),
+      });
+    } catch {
+      // cache write is best-effort
+    }
   }
 
   if (opts.dryRun) {
@@ -212,25 +332,26 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
     return;
   }
 
-  console.log(colors.green(`\n✔ Generated ${allGenerated.length} skill(s):\n`));
+  console.log(colors.bold("\nCache summary:"));
+  console.log(colors.dim(`  global hit/miss: ${globalHits}/${globalMisses}`));
+  console.log(colors.dim(`  per-skill regenerated/reused: ${totalRegenerated}/${totalReused}`));
+
+  console.log(colors.green(`\n✔ Generated/Reused ${allGenerated.length} skill(s):\n`));
   table([
     ["Name", "Description", "Category"],
     ...allGenerated.map((s) => [s.name, s.description ?? "", s.category ?? ""]),
   ]);
 
-  // MCP install
   if (allMcps.length > 0) {
     const unique = dedup(allMcps);
     await offerMcpInstall(unique);
   }
 
-  // Push
   const shouldPush = await confirm("\nPush skills to GitHub?");
   if (shouldPush) {
     await push();
   }
 }
-
 /**
  * Build a comprehensive project summary from deep scan context.
  * This gets fed to Claude for skill generation.
@@ -315,102 +436,114 @@ async function generateSkillsFromContext(
   outputDir: string,
   repoName: string,
   research?: any[],
+  categories: Array<"domain" | "architecture" | "conventions" | "security"> = ["domain", "architecture", "conventions", "security"],
 ): Promise<GeneratedSkill[]> {
-  const { execSync } = await import("node:child_process");
+  const { spawn } = await import("node:child_process");
   const { mkdir, writeFile } = await import("node:fs/promises");
   const { join: joinPath } = await import("node:path");
 
-  // Single Claude call: analyze project AND generate all skills at once
-  // Keep context under 15K to avoid Claude CLI timeouts
-  const prompt = `You are analyzing a software project and generating Claude Code skill files.
+  const slug = repoName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "repo";
+  const specs: Record<string, { description: string; focus: string }> = {
+    domain: {
+      description: `Core domain knowledge for ${repoName}`,
+      focus: "what the project does, domain language, key concepts, workflows",
+    },
+    architecture: {
+      description: `Architecture and codebase boundaries for ${repoName}`,
+      focus: "module boundaries, data/control flow, layering, integration points",
+    },
+    conventions: {
+      description: `Coding conventions and idioms for ${repoName}`,
+      focus: "naming, organization, coding style, recurring patterns and anti-patterns",
+    },
+    security: {
+      description: `Security guardrails for ${repoName}`,
+      focus: "security-sensitive areas, validation, authz/authn, secrets handling",
+    },
+  };
+
+  const out: GeneratedSkill[] = [];
+
+  for (const category of categories) {
+    const spec = specs[category];
+    const skillName = `${slug}-${category}`;
+    const prompt = `You are analyzing a software project and generating ONE Claude Code skill file.
 
 PROJECT CONTEXT:
 ${projectSummary.slice(0, 15000)}
 
-${research?.length ? `\nWeb research on current best practices:\n${research.map(r => `${r.topic}: ${r.findings}`).join("\n\n").slice(0, 10000)}` : ""}
+STACK:
+Languages: ${stack.languages.join(", ")}
+Frameworks: ${stack.frameworks.join(", ") || "none"}
+Build tools: ${stack.buildTools.join(", ") || "none"}
+Testing: ${stack.testing.join(", ") || "none"}
 
-TASK: Generate exactly 4 SKILL.md files specific to THIS project "${repoName}":
-1. Core domain — what this project does, key concepts
-2. Architecture — codebase organization, data flow
-3. Coding conventions — naming, idioms, patterns
-4. Security — domain-specific security concerns
+${research?.length ? `Web research on current best practices:\n${research.map(r => `${r.topic}: ${r.findings}`).join("\n\n").slice(0, 8000)}` : ""}
 
-OUTPUT FORMAT: Return a JSON array of 4 objects:
-- "name": kebab-case (e.g. "zcash-privacy-patterns")
-- "category": "domain" | "architecture" | "conventions" | "security"
-- "description": one-line
-- "content": SKILL.md markdown (50-80 lines max)
+TASK:
+- Generate exactly one SKILL.md for category: ${category}
+- Focus on: ${spec.focus}
+- Make it specific to this project and reference real file paths
 
-Content sections: ## Description, ## Patterns, ## Conventions, ## Anti-Patterns
-Be SPECIFIC to this project. Reference actual file paths.
-Return ONLY the JSON array. No markdown fences.`;
+OUTPUT FORMAT: Return ONLY markdown (no JSON, no fences around whole doc) with these sections:
+# ${skillName}
+## Description
+## Patterns
+## Conventions
+## Anti-Patterns
+## References
 
-  let skills: Array<{ name: string; category: string; description: string; content: string }>;
-  try {
-    const { spawn } = await import("node:child_process");
-    const output = await new Promise<string>((resolve, reject) => {
-      const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
-        stdio: ["pipe", "pipe", "pipe"],
+Keep it concise and practical.`;
+
+    let content = "";
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        let stdout = "";
+        const timeout = setTimeout(() => { child.kill(); reject(new Error("Timeout")); }, 300000);
+
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on("data", () => {});
+        child.on("close", (code) => {
+          clearTimeout(timeout);
+          if (code !== 0) return reject(new Error(`claude exited with code ${code}`));
+          resolve(stdout);
+        });
+        child.on("error", (err) => { clearTimeout(timeout); reject(err); });
       });
+      content = output.trim();
+    } catch (err: any) {
+      console.error(colors.dim(`  ⚠ Skill generation failed (${category}): ${err.message?.slice(0, 200)}`));
+      continue;
+    }
 
-      let stdout = "";
-      let lastLine = "";
-      const timeout = setTimeout(() => { child.kill(); reject(new Error("Timeout")); }, 300000);
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        const text = chunk.toString();
-        stdout += text;
-        // Show live preview of what Claude is generating
-        const lines = text.split("\n").filter((l: string) => l.trim());
-        if (lines.length > 0) {
-          lastLine = lines[lines.length - 1].trim().slice(0, 80);
-          process.stdout.write(`\r\x1b[K  ${colors.dim("⟩")} ${colors.dim(lastLine)}`);
-        }
-      });
-
-      child.stderr.on("data", () => {}); // ignore stderr
-
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        process.stdout.write(`\r\x1b[K`); // clear the preview line
-        if (code !== 0) return reject(new Error(`claude exited with code ${code}`));
-        resolve(stdout);
-      });
-
-      child.on("error", (err) => { clearTimeout(timeout); reject(err); });
-    });
-    const match = output.match(/\[[\s\S]*\]/);
-    skills = match ? JSON.parse(match[0]) : [];
-  } catch (err: any) {
-    console.error(colors.dim(`  ⚠ Skill generation failed: ${err.message?.slice(0, 200)}`));
-    return [];
-  }
-
-  // Write skill files
-  const results: GeneratedSkill[] = [];
-  for (const skill of skills) {
-    if (!skill.name || !skill.content) continue;
-    const skillDir = joinPath(outputDir, skill.name);
+    if (!content) continue;
+    const skillDir = joinPath(outputDir, skillName);
     await mkdir(skillDir, { recursive: true });
-    await writeFile(joinPath(skillDir, "SKILL.md"), skill.content, "utf-8");
+    await writeFile(joinPath(skillDir, "SKILL.md"), `${content}\n`, "utf-8");
     await writeFile(joinPath(skillDir, "meta.json"), JSON.stringify({
-      name: skill.name,
-      description: skill.description,
-      category: skill.category,
+      name: skillName,
+      description: spec.description,
+      category,
       sourceRepo: repoName,
       createdAt: new Date().toISOString(),
     }, null, 2), "utf-8");
-    results.push({
-      name: skill.name,
+
+    out.push({
+      name: skillName,
       path: joinPath(skillDir, "SKILL.md"),
-      description: skill.description || "",
-      category: skill.category || "",
+      description: spec.description,
+      category,
     });
   }
 
-  return results;
+  return out;
 }
-
 /**
  * MCP: standalone MCP discovery for current project
  */

@@ -47,6 +47,10 @@ export interface StackInfo {
 // Progress callback: called for each file being processed
 export type ProgressCallback = (file: string, stats: { scanned: number; skipped: number; total: number }) => void;
 
+export interface DeepScanOptions {
+  excludePatterns?: string[];
+}
+
 // ── Skip lists ────────────────────────────────────────────────────────────
 
 const SKIP_DIRS = new Set([
@@ -140,6 +144,22 @@ function hasSensitiveContent(content: string): boolean {
   return SENSITIVE_CONTENT.test(head);
 }
 
+function wildcardToRegExp(pattern: string): RegExp {
+  // minimal glob support: *, **
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "::DOUBLE_STAR::")
+    .replace(/\*/g, "[^/]*")
+    .replace(/::DOUBLE_STAR::/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+function isExcluded(relPath: string, patterns: string[]): boolean {
+  if (!patterns.length) return false;
+  const normalized = relPath.replace(/\\/g, "/");
+  return patterns.some((p) => wildcardToRegExp(p).test(normalized));
+}
+
 function categorizeFile(relPath: string, ext: string): FileEntry["category"] {
   const lower = relPath.toLowerCase();
   // Reference materials
@@ -197,10 +217,12 @@ async function* walkFiles(
 export async function deepScan(
   projectDir: string,
   onProgress?: ProgressCallback,
+  options: DeepScanOptions = {},
 ): Promise<ProjectContext> {
   const absRoot = join(projectDir);
   const name = basename(absRoot);
   const stats = { scanned: 0, skipped: 0, total: 0 };
+  const excludePatterns = options.excludePatterns ?? [];
   const skipReasons = new Map<string, number>();
   const markSkip = (reason: string) => {
     stats.skipped++;
@@ -214,13 +236,20 @@ export async function deepScan(
   const structure: string[] = [];
   const langCounts = new Map<string, number>();
 
-  // Count total files first for progress
-  for await (const _ of walkFiles(absRoot, absRoot)) {
+  // Count total files first for progress (after excludes)
+  for await (const f of walkFiles(absRoot, absRoot)) {
+    if (isExcluded(f.relPath, excludePatterns)) continue;
     stats.total++;
   }
 
   // Now scan with progress
   for await (const { absPath, relPath } of walkFiles(absRoot, absRoot)) {
+    if (isExcluded(relPath, excludePatterns)) {
+      markSkip("excluded pattern");
+      onProgress?.(relPath, stats);
+      continue;
+    }
+
     const fileName = basename(relPath);
     const ext = extname(fileName).toLowerCase();
 
