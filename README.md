@@ -177,6 +177,62 @@ Agents are written to `.claude/agents/*.md` — the standard Claude Code project
 | `project-historian` | Track decisions and architecture changes |
 | *domain agents* | Auto-detected (Solana, Zcash, Circom, mobile-wallet) |
 
+## Nested Scope Rules
+
+The scope wizard tags top-level directories, but sometimes you need finer control. **Nested scope rules** let you override tags for specific sub-paths using glob patterns with **first-match-wins** semantics.
+
+### How It Works
+
+Rules are evaluated before top-level entries. The first matching glob determines the tag for a file path. If no rule matches, the top-level entry tag applies.
+
+### Examples
+
+```jsonc
+// .vibe/scope.json
+{
+  "version": 2,
+  "entries": [
+    { "name": "modules", "tag": "core" },
+    { "name": "node_modules", "tag": "deps/generated" }
+  ],
+  "rules": [
+    { "glob": "modules/**/reference/**", "tag": "ignore" },
+    { "glob": "modules/expo-tor-bridge/**", "tag": "core" }
+  ]
+}
+```
+
+With this config:
+- `modules/foo/bar.ts` → **core** (top-level entry)
+- `modules/foo/reference/spec.md` → **ignore** (rule 1 matches first)
+- `modules/expo-tor-bridge/index.ts` → **core** (rule 2 matches first)
+
+### Managing Rules
+
+**During training:** The scope wizard offers an optional refinement step after top-level tagging, where you can add nested rules for core/reference folders.
+
+**Standalone editor:**
+
+```bash
+vibe scope-rules          # edit rules for current directory
+vibe scope-rules ./repo   # edit rules for a specific repo
+```
+
+The editor supports: `add`, `list`, `delete <n>`, `save`.
+
+### Supported Tags
+
+| Tag | Effect |
+|-----|--------|
+| `core` | Full weight in training scan |
+| `reference` | Included but lower weight |
+| `deps/generated` | Excluded from scan |
+| `ignore` | Excluded from scan |
+
+### Migration
+
+Existing `version: 1` scope configs are automatically migrated to `version: 2` with an empty rules array. No action needed.
+
 ## Uninstall
 
 ```bash

@@ -1,8 +1,9 @@
 /**
  * Scope Wizard — interactive per-repo training scope configuration.
  *
- * On first `vibe train .`, prompts user to tag top-level entries as:
- *   core | reference | deps/generated | ignore
+ * Supports two levels of scope control:
+ *   1. Top-level entry tagging (core | reference | deps/generated | ignore)
+ *   2. Ordered glob rules with first-match-wins semantics for nested path control
  *
  * Persisted in `.vibe/scope.json` inside the target repo.
  */
@@ -21,9 +22,26 @@ export interface ScopeEntry {
   tag: ScopeTag;
 }
 
-export interface ScopeConfig {
+/** Ordered glob rule — first match wins during path resolution */
+export interface ScopeRule {
+  glob: string;
+  tag: ScopeTag;
+}
+
+/** V1 config (backward compat) */
+export interface ScopeConfigV1 {
   version: 1;
   entries: ScopeEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** V2 config with hierarchical rules */
+export interface ScopeConfig {
+  version: 2;
+  entries: ScopeEntry[];
+  /** Ordered glob rules — first match wins. Evaluated before top-level entries. */
+  rules: ScopeRule[];
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +56,8 @@ export interface ScopeWeights {
   referencePaths: string[];
   /** Paths treated as core (full weight) */
   corePaths: string[];
+  /** Ordered rules for fine-grained path matching */
+  rules: ScopeRule[];
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────
@@ -49,13 +69,26 @@ function scopePath(repoRoot: string): string {
   return join(repoRoot, SCOPE_DIR, SCOPE_FILE);
 }
 
+/** Migrate V1 config to V2 */
+function migrateV1(v1: ScopeConfigV1): ScopeConfig {
+  return {
+    version: 2,
+    entries: v1.entries,
+    rules: [],
+    createdAt: v1.createdAt,
+    updatedAt: v1.updatedAt,
+  };
+}
+
 export function loadScopeConfig(repoRoot: string): ScopeConfig | null {
   const p = scopePath(repoRoot);
   if (!existsSync(p)) return null;
   try {
     const raw = readFileSync(p, "utf-8");
     const parsed = JSON.parse(raw);
-    if (parsed?.version === 1 && Array.isArray(parsed.entries)) return parsed as ScopeConfig;
+    if (!parsed || !Array.isArray(parsed.entries)) return null;
+    if (parsed.version === 1) return migrateV1(parsed as ScopeConfigV1);
+    if (parsed.version === 2) return parsed as ScopeConfig;
     return null;
   } catch {
     return null;
@@ -72,7 +105,7 @@ export function saveScopeConfig(repoRoot: string, config: ScopeConfig): void {
 
 const DEPS_PATTERNS = /^(node_modules|vendor|\.venv|venv|__pycache__|\.next|\.nuxt|dist|build|out|target|\.gradle|\.cache|\.tox|coverage|\.nyc_output|\.turbo)$/;
 const GENERATED_PATTERNS = /^(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|poetry\.lock|Cargo\.lock|go\.sum|composer\.lock)$/;
-const IGNORE_PATTERNS = /^(\.[a-z]+)$/; // dotfiles/dotdirs not otherwise classified
+const IGNORE_PATTERNS = /^(\.[a-z]+)$/;
 const REFERENCE_PATTERNS = /^(reference|examples|docs|doc|wiki|specs|spec|samples|demo|demos|fixtures|testdata|test-data)$/i;
 
 function guessTag(name: string, isDir: boolean): ScopeTag {
@@ -131,9 +164,8 @@ export async function runScopeWizard(
   if (!isInteractive()) return null;
 
   const existing = loadScopeConfig(repoRoot);
-  if (!opts.editExisting && existing) return existing; // already configured
+  if (!opts.editExisting && existing) return existing;
 
-  // Prompt to enter wizard (unless --edit-scope)
   if (!opts.editExisting) {
     const answer = await askLine("Configure training scope now? [Y/n] ");
     if (answer.toLowerCase() === "n") return null;
@@ -151,19 +183,35 @@ export async function runScopeWizard(
     for (const e of existing.entries) existingMap.set(e.name, e.tag);
   }
 
-  // Initialize tags from existing or suggestions
   const tags: ScopeTag[] = topLevel.map((e) =>
     existingMap.has(e.name) ? existingMap.get(e.name)! : e.suggestedTag,
   );
 
-  // Run interactive selector
+  // Step 1: top-level tagging
   const result = await interactiveSelect(topLevel, tags);
   if (!result) return null;
 
   const now = new Date().toISOString();
+  const entries = topLevel.map((e, i) => ({ name: e.name, tag: result[i] }));
+  let rules: ScopeRule[] = existing?.rules ?? [];
+
+  // Step 2: optional refinement for core/reference folders
+  const refinable = entries.filter((e) => e.tag === "core" || e.tag === "reference");
+  if (refinable.length > 0) {
+    const refine = await askLine("Add nested scope rules for core/reference folders? [y/N] ");
+    if (refine.toLowerCase() === "y") {
+      console.log(colors.dim("\n  Examples:"));
+      console.log(colors.dim("    modules/**/reference/** -> ignore"));
+      console.log(colors.dim("    modules/expo-tor-bridge/** -> core"));
+      console.log(colors.dim("    src/generated/** -> deps/generated\n"));
+      rules = await ruleEditor(rules);
+    }
+  }
+
   const config: ScopeConfig = {
-    version: 1,
-    entries: topLevel.map((e, i) => ({ name: e.name, tag: result[i] })),
+    version: 2,
+    entries,
+    rules,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -171,6 +219,102 @@ export async function runScopeWizard(
   saveScopeConfig(repoRoot, config);
   console.log(colors.green(`✔ Scope saved to ${SCOPE_DIR}/${SCOPE_FILE}`));
   return config;
+}
+
+/**
+ * Interactive rule editor (prompt-based).
+ */
+export async function ruleEditor(initial: ScopeRule[]): Promise<ScopeRule[]> {
+  const rules = [...initial];
+
+  const printRules = () => {
+    if (rules.length === 0) {
+      console.log(colors.dim("  (no rules)"));
+    } else {
+      for (let i = 0; i < rules.length; i++) {
+        const r = rules[i];
+        const tagStr = TAG_COLORS[r.tag](`[${r.tag}]`);
+        console.log(`  ${colors.dim(`${i + 1}.`)} ${r.glob.padEnd(40)} ${tagStr}`);
+      }
+    }
+  };
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    console.log(colors.bold("\n  Rule Editor") + colors.dim(" — commands: add, list, delete <n>, save\n"));
+    printRules();
+    const cmd = (await askLine("\n  rule> ")).trim().toLowerCase();
+
+    if (cmd === "save" || cmd === "s" || cmd === "") break;
+
+    if (cmd === "list" || cmd === "l") {
+      printRules();
+      continue;
+    }
+
+    if (cmd === "add" || cmd === "a") {
+      const glob = await askLine("  glob pattern (e.g. modules/**/reference/**): ");
+      if (!glob.trim()) continue;
+      const tagInput = await askLine("  tag (core/reference/deps/ignore) [ignore]: ");
+      const tag = normalizeTagInput(tagInput.trim()) ?? "ignore";
+      rules.push({ glob: glob.trim(), tag });
+      console.log(colors.green(`  ✔ Added: ${glob.trim()} -> ${tag}`));
+      continue;
+    }
+
+    if (cmd.startsWith("delete") || cmd.startsWith("del") || cmd.startsWith("d ") || cmd.startsWith("rm ")) {
+      const numStr = cmd.replace(/^(delete|del|rm|d)\s*/, "");
+      const idx = parseInt(numStr, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= rules.length) {
+        console.log(colors.yellow("  Invalid rule number."));
+        continue;
+      }
+      const removed = rules.splice(idx, 1)[0];
+      console.log(colors.dim(`  Removed: ${removed.glob} -> ${removed.tag}`));
+      continue;
+    }
+
+    console.log(colors.dim("  Unknown command. Try: add, list, delete <n>, save"));
+  }
+
+  return rules;
+}
+
+function normalizeTagInput(input: string): ScopeTag | null {
+  const map: Record<string, ScopeTag> = {
+    core: "core",
+    reference: "reference",
+    ref: "reference",
+    deps: "deps/generated",
+    "deps/generated": "deps/generated",
+    generated: "deps/generated",
+    ignore: "ignore",
+    skip: "ignore",
+  };
+  return map[input.toLowerCase()] ?? null;
+}
+
+/**
+ * Run the standalone rule editor command (for `vibe scope-rules`).
+ */
+export async function runRuleEditor(repoRoot: string): Promise<void> {
+  if (!isInteractive()) {
+    console.log(colors.yellow("Rule editor requires an interactive terminal."));
+    return;
+  }
+
+  const existing = loadScopeConfig(repoRoot);
+  if (!existing) {
+    console.log(colors.yellow("No scope config found. Run `vibe train` first to create one."));
+    return;
+  }
+
+  console.log(colors.bold("\n  Nested Scope Rules\n"));
+  const rules = await ruleEditor(existing.rules);
+  existing.rules = rules;
+  existing.updatedAt = new Date().toISOString();
+  saveScopeConfig(repoRoot, existing);
+  console.log(colors.green(`✔ Rules saved to ${SCOPE_DIR}/${SCOPE_FILE}`));
 }
 
 async function interactiveSelect(
@@ -182,12 +326,10 @@ async function interactiveSelect(
 
   return new Promise<ScopeTag[] | null>((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    // Raw mode for keypress detection
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     readline.emitKeypressEvents(process.stdin, rl);
 
     const render = () => {
-      // Move up to clear previous render
       const lines = entries.length + 3;
       process.stdout.write(`\x1b[${lines}A\x1b[J`);
       printUI();
@@ -206,7 +348,6 @@ async function interactiveSelect(
       }
     };
 
-    // Initial render
     printUI();
 
     const onKeypress = (_ch: string, key: readline.Key) => {
@@ -271,6 +412,47 @@ function askLine(prompt: string): Promise<string> {
   });
 }
 
+// ── Glob matching ─────────────────────────────────────────────────────────
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "::DOUBLE_STAR::")
+    .replace(/\*/g, "[^/]*")
+    .replace(/::DOUBLE_STAR::/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Resolve the effective tag for a file path using hierarchical rules.
+ *
+ * Resolution order (first match wins):
+ *   1. Ordered glob rules
+ *   2. Top-level entry match (path starts with entry name)
+ *   3. Default: "core"
+ */
+export function resolvePathTag(filePath: string, config: ScopeConfig): ScopeTag {
+  const normalized = filePath.replace(/\\/g, "/");
+
+  // 1. Check ordered rules first (first match wins)
+  for (const rule of config.rules) {
+    if (globToRegExp(rule.glob).test(normalized)) {
+      return rule.tag;
+    }
+  }
+
+  // 2. Fall back to top-level entry match
+  const firstSegment = normalized.split("/")[0];
+  for (const entry of config.entries) {
+    if (entry.name === firstSegment) {
+      return entry.tag;
+    }
+  }
+
+  // 3. Default
+  return "core";
+}
+
 // ── Scope → scan behavior translation ─────────────────────────────────────
 
 export function scopeToWeights(config: ScopeConfig): ScopeWeights {
@@ -296,20 +478,36 @@ export function scopeToWeights(config: ScopeConfig): ScopeWeights {
     }
   }
 
-  return { includePaths, excludePaths, referencePaths, corePaths };
+  return { includePaths, excludePaths, referencePaths, corePaths, rules: config.rules };
 }
 
 /**
  * Convert scope weights into exclude patterns suitable for deep scanner.
+ * Includes both top-level excludes and glob rules tagged ignore/deps.
  */
 export function scopeToExcludePatterns(weights: ScopeWeights): string[] {
-  return weights.excludePaths.map((p) => `${p}/**`);
+  const patterns = weights.excludePaths.map((p) => `${p}/**`);
+  // Add ignore/deps rules as exclude patterns too
+  for (const rule of weights.rules) {
+    if (rule.tag === "ignore" || rule.tag === "deps/generated") {
+      if (!patterns.includes(rule.glob)) {
+        patterns.push(rule.glob);
+      }
+    }
+  }
+  return patterns;
 }
 
 /**
- * Check if a file path falls under a reference scope entry (lower weight).
+ * Check if a file path falls under a reference scope (lower weight).
+ * Uses hierarchical rule resolution.
  */
-export function isReferencePath(filePath: string, weights: ScopeWeights): boolean {
+export function isReferencePath(filePath: string, weights: ScopeWeights, config?: ScopeConfig): boolean {
+  // If full config available, use hierarchical resolution
+  if (config) {
+    return resolvePathTag(filePath, config) === "reference";
+  }
+  // Legacy fallback: simple prefix match
   return weights.referencePaths.some(
     (ref) => filePath === ref || filePath.startsWith(ref + "/"),
   );

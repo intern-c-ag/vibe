@@ -29,6 +29,7 @@ ${colors.bold("Other commands:")}
   ${colors.cyan("push")} [repo]            Push skill library to GitHub
   ${colors.cyan("list")}                   List trained skills
   ${colors.cyan("config")} [key] [val]     Get or set configuration
+  ${colors.cyan("scope-rules")} [dir]      Edit nested scope rules for a repo
 
 ${colors.bold("Advanced options:")}
   --context <file>     Add extra context (markdown, session exports)
@@ -132,6 +133,12 @@ async function main(): Promise<void> {
       }
       case "config": {
         config(positional[1], positional[2]);
+        break;
+      }
+      case "scope-rules": {
+        const { runRuleEditor } = await import("./scope-wizard.js");
+        const targetDir = positional[1] ? resolve(positional[1]) : process.cwd();
+        await runRuleEditor(targetDir);
         break;
       }
       default:
