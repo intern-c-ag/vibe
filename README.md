@@ -233,6 +233,16 @@ The editor supports: `add`, `list`, `delete <n>`, `save`.
 
 Existing `version: 1` scope configs are automatically migrated to `version: 2` with an empty rules array. No action needed.
 
+## Supply-Chain Protection
+
+Protect your repo from dependency confusion and typosquatting attacks by enforcing a minimum release age on new packages.
+
+```bash
+vibe protect deps
+```
+
+Detects npm, pnpm, yarn, bun, and uv in the current directory, shows which are configured, and offers to write repo-local config (`.npmrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`, `bunfig.toml`, `pyproject.toml`) with safe defaults. Never modifies global config. Appends only if the key is missing.
+
 ## Uninstall
 
 ```bash

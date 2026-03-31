@@ -29,6 +29,7 @@ ${colors.bold("Other commands:")}
   ${colors.cyan("push")} [repo]            Push skill library to GitHub
   ${colors.cyan("list")}                   List trained skills
   ${colors.cyan("config")} [key] [val]     Get or set configuration
+  ${colors.cyan("protect deps")}           Add supply-chain protection to detected package managers
   ${colors.cyan("scope-rules")} [dir]      Edit nested scope rules for a repo
 
 ${colors.bold("Advanced options:")}
@@ -133,6 +134,17 @@ async function main(): Promise<void> {
       }
       case "config": {
         config(positional[1], positional[2]);
+        break;
+      }
+      case "protect": {
+        if (positional[1] === "deps") {
+          const { protectDeps } = await import("./protect-deps.js");
+          await protectDeps(process.cwd());
+        } else {
+          console.error(`${colors.red("Unknown protect sub-command:")} ${positional[1] ?? "(none)"}`);
+          console.error(`  ${colors.dim("Usage: vibe protect deps")}`);
+          process.exit(1);
+        }
         break;
       }
       case "scope-rules": {
