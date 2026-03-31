@@ -129,20 +129,20 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
   const cacheEnabled = !opts.forceRetrain;
   console.log(
     colors.dim(
-      `Training mode: ${aiEnabled ? "AI" : "local-first"} | cache: ${cacheEnabled ? "partial-reuse" : "disabled (--force-retrain)"}${opts.dryRun ? " | dry-run" : ""}`,
+      `Training mode: AI | cache: ${cacheEnabled ? "partial-reuse" : "disabled (--force-retrain)"}${opts.dryRun ? " | dry-run" : ""}`,
     ),
   );
 
-  // Auto-include reference/ directories as secondary context
+  // Auto-include reference/ directories as secondary context (unless excluded)
   if (opts.autoReference !== false) {
-    for (const p of paths) {
-      const refDir = join(resolve(p), "reference");
-      if (existsSync(refDir)) {
-        console.log(colors.dim(`  auto-including reference/ as secondary context`));
-        // reference/ is already scanned by deep-scanner and categorized as "reference"
-        // with lightweight weighting in buildProjectSummary — no extra action needed.
-        // Just ensure it's not excluded.
-        break;
+    const refExcluded = (opts.excludePatterns ?? []).some((p) => p.includes("reference/**") || p.includes("reference/"));
+    if (!refExcluded) {
+      for (const p of paths) {
+        const refDir = join(resolve(p), "reference");
+        if (existsSync(refDir)) {
+          console.log(colors.dim(`  using reference/ as secondary context`));
+          break;
+        }
       }
     }
   }
