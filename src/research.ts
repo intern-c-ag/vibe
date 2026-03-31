@@ -35,7 +35,7 @@ function claudeResearch(prompt: string, timeoutMs = 60_000): Promise<string> {
     const child = execFile(
       "claude",
       ["-p", prompt, "--output-format", "text"],
-      { timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+      { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout) => {
         if (err) return reject(err);
         resolve(stdout.trim());
@@ -83,7 +83,7 @@ Return as a JSON array where each object has:
 Return ONLY the JSON array, no markdown fences.`;
 
   try {
-    const output = await claudeResearch(prompt, 90000);
+    const output = await claudeResearch(prompt, 120000);
     const match = output.match(/\[[\s\S]*\]/);
     if (match) {
       const parsed = JSON.parse(match[0]) as ResearchResult[];

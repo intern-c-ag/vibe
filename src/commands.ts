@@ -301,12 +301,18 @@ Return ONLY the JSON array. No markdown fences.`;
 
   let skills: Array<{ name: string; category: string; description: string; content: string }>;
   try {
-    const { execFileSync } = await import("node:child_process");
-    const output = execFileSync(
-      "claude",
-      ["-p", prompt, "--output-format", "text"],
-      { encoding: "utf-8", timeout: 300000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 50 * 1024 * 1024 }
-    );
+    const { execFile } = await import("node:child_process");
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile(
+        "claude",
+        ["-p", prompt, "--output-format", "text"],
+        { encoding: "utf-8", timeout: 300000, maxBuffer: 50 * 1024 * 1024 },
+        (err, stdout) => {
+          if (err) return reject(err);
+          resolve(stdout);
+        }
+      );
+    });
     const match = output.match(/\[[\s\S]*\]/);
     skills = match ? JSON.parse(match[0]) : [];
   } catch (err: any) {
