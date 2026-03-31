@@ -105,7 +105,6 @@ interface TrainOptions {
   contextFiles?: string[];
   excludePatterns?: string[];
   ai?: boolean;
-  localFirst?: boolean;
   dryRun?: boolean;
   forceRetrain?: boolean;
   /** Auto-include reference/ as secondary context (default true) */
@@ -117,7 +116,7 @@ interface TrainOptions {
  */
 export async function train(paths: string[], opts: TrainOptions = {}): Promise<void> {
   banner();
-  const aiEnabled = Boolean(opts.ai) && !opts.localFirst;
+  const aiEnabled = opts.ai !== false;
   const cacheEnabled = !opts.forceRetrain;
   console.log(
     colors.dim(

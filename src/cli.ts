@@ -33,8 +33,6 @@ ${colors.bold("Other commands:")}
 ${colors.bold("Advanced options:")}
   --context <file>     Add extra context (markdown, session exports)
   --exclude <glob>     Exclude paths from scan (repeatable)
-  --ai                 Enable AI enrichment during train
-  --local-first        Force local-only train flow (skip AI calls)
   --dry-run            Explain train plan without writing skills
   --force-retrain      Ignore cache and regenerate all train targets
   --no-reference       Skip auto-inclusion of reference/ directory
@@ -106,8 +104,7 @@ async function main(): Promise<void> {
         await train(repoPaths, {
           contextFiles,
           excludePatterns,
-          ai: flags.has("--ai"),
-          localFirst: flags.has("--local-first"),
+          ai: true,
           dryRun: flags.has("--dry-run"),
           forceRetrain: flags.has("--force-retrain"),
           autoReference: !noReference,

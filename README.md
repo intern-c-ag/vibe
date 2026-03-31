@@ -46,22 +46,10 @@ vibe train ~/projects/app ~/projects/api
 
 Use `--force-retrain` to bypass cache and regenerate everything.
 
-If you want AI enrichment (web research + Claude-generated skills), opt in explicitly:
+You can also add extra context files (docs or Opencode/Claude markdown exports):
 
 ```bash
-vibe train . --ai
-```
-
-You can also add multiple external context files (docs or Opencode/Claude markdown exports):
-
-```bash
-# Local mode: parsed context signals feed deterministic skill generation
 vibe train . \
-  --context ~/exports/opencode-session.md \
-  --context ~/docs/architecture-notes.md
-
-# AI mode: same parsed signals are injected into the Claude prompt
-vibe train . --ai \
   --context ~/exports/claude-session.md \
   --context ~/docs/roadmap.md
 ```
@@ -72,7 +60,7 @@ Session-style markdown exports are parsed for structured signals (decisions, con
 
 ```
 vibe                     Set up project + launch Claude Code
-vibe train <path...>     Learn patterns from your repos (local mode by default)
+vibe train <path...>     Learn patterns from your repos (AI-first with cache reuse)
 vibe init                Set up project without launching
 vibe mcp                 Discover and install MCP servers
 vibe push [repo]         Push skill library to GitHub
@@ -83,7 +71,6 @@ vibe config [key] [val]  Get or set configuration
 ### Flags
 
 ```
---ai                 Use Claude + web research during `vibe train`
 --context <file>     Add extra context file (repeatable)
 --force-retrain      Ignore cache and force skill regeneration (train only)
 --force              Overwrite existing files
