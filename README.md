@@ -54,7 +54,15 @@ vibe train . \
   --context ~/docs/roadmap.md
 ```
 
-Session-style markdown exports are parsed for structured signals (decisions, conventions, architecture notes, TODOs, tooling/workflow). Plain markdown gracefully falls back to raw excerpt context.
+Session-style markdown exports are parsed for structured signals (decisions, conventions, architecture notes, security requirements, TODOs, tooling/workflow) with **confidence-weighted scoring**:
+
+- **High confidence**: Explicit constraints ("only Solana+Zcash", "must use", "never do X"), security requirements, and heading-matched decisions are prioritized and injected as critical directives that override repo scan inferences.
+- **Medium confidence**: Architectural decisions, coding conventions extracted from context.
+- **Low confidence**: Vague or short items that provide background but don't drive skill generation.
+
+This ensures context files from exported conversations (Claude Code, Opencode) strongly influence generated skills rather than being diluted by repo scan noise. A summary of applied directives is logged during training.
+
+Plain markdown gracefully falls back to raw excerpt context.
 
 ### All commands
 

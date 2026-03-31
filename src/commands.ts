@@ -16,6 +16,15 @@ import {
   saveTrainCache,
 } from "./train-cache.js";
 import { discoverMcps, installMcp, type McpServer } from "./mcp-discovery.js";
+import {
+  parseContextMarkdown,
+  mergeContextSignals,
+  formatSignalsForPrompt,
+  logAppliedDirectives,
+  isContextFilePath,
+  type ParsedContextFile,
+  type WeightedSignal,
+} from "./context-parser.js";
 import { setupProject } from "./setup.js";
 import { isClaudeInstalled, installClaude, launchClaude } from "./claude-manager.js";
 import { colors, spinner, banner, ask, confirm, table, progressBar } from "./ui.js";
@@ -146,8 +155,14 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
   let totalReused = 0;
   let totalRegenerated = 0;
 
+  // Defensive: ensure context files are never treated as repo paths
+  const contextFileSet = new Set((opts.contextFiles ?? []).map((cf) => resolve(cf)));
   for (const p of paths) {
     const repoPath = resolve(p);
+    if (contextFileSet.has(repoPath) || isContextFilePath(repoPath)) {
+      console.log(colors.dim(`  ⚠ Skipping context file as repo path: ${p}`));
+      continue;
+    }
     const repoName = basename(repoPath);
 
     const contextFingerprint = await computeContextFingerprint(opts.contextFiles ?? []);
@@ -206,17 +221,31 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
     console.log(colors.dim(`  identity source: ${context.identitySource}`));
 
     let extraContext = "";
+    const parsedContextFiles: ParsedContextFile[] = [];
+    const allWeightedSignals: WeightedSignal[] = [];
     if (opts.contextFiles?.length) {
       const { readFile } = await import("node:fs/promises");
       for (const cf of opts.contextFiles) {
         try {
           const content = await readFile(cf, "utf-8");
           const name = cf.split("/").pop() || cf;
+          const parsed = parseContextMarkdown(name, content);
+          parsedContextFiles.push(parsed);
+          allWeightedSignals.push(...parsed.weighted);
+
+          // Build weighted context block: structured signals first, then raw excerpt
+          const signalsBlock = formatSignalsForPrompt(parsed.signals, parsed.weighted);
+          extraContext += signalsBlock ? `\n\n${signalsBlock}\n` : "";
           extraContext += `\n\n## Extra Context: ${name}\n${content.slice(0, 10000)}\n`;
-          console.log(colors.dim(`  + Loaded context: ${name} (${content.length} chars)`));
+          console.log(colors.dim(`  + Loaded context: ${name} (${parsed.kind}, ${parsed.weighted.length} weighted signals, ${content.length} chars)`));
         } catch {
           console.log(colors.dim(`  ⚠ Could not read: ${cf}`));
         }
+      }
+
+      // Log applied directives summary
+      if (allWeightedSignals.length > 0) {
+        logAppliedDirectives(allWeightedSignals, (msg) => console.log(colors.dim(msg)));
       }
     }
 
@@ -245,7 +274,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
       ? (["domain", "architecture", "conventions", "security"] as const)
       : (["domain", "architecture", "conventions", "security", "testing"] as const);
 
-    const signalCount = extractContextSignals(extraContext);
+    const signalCount = allWeightedSignals.length || extractContextSignals(extraContext);
     const plannedSkills = plannedSkillsFor(repoName, context, aiEnabled);
 
     if (opts.dryRun) {
@@ -299,7 +328,7 @@ export async function train(paths: string[], opts: TrainOptions = {}): Promise<v
         );
       } else {
         regeneratedSkills.push(
-          ...(await generateSkillsFromLocalContext(context, skillsDir, repoName, undefined, [...regenerateCategories])),
+          ...(await generateSkillsFromLocalContext(context, skillsDir, repoName, allWeightedSignals.length ? allWeightedSignals : undefined, [...regenerateCategories])),
         );
       }
       genSpin.succeed(`Generated ${regeneratedSkills.length} skill(s)`);

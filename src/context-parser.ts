@@ -4,16 +4,27 @@ export interface ContextSignals {
   architectureNotes: string[];
   todosFollowups: string[];
   toolingWorkflow: string[];
+  securityRequirements: string[];
+}
+
+export type SignalConfidence = "high" | "medium" | "low";
+
+export interface WeightedSignal {
+  text: string;
+  confidence: SignalConfidence;
+  bucket: keyof ContextSignals;
+  source: string; // heading or "general"
 }
 
 export interface ParsedContextFile {
   fileName: string;
   kind: "session-export" | "markdown";
   signals: ContextSignals;
+  weighted: WeightedSignal[];
   excerpt: string;
 }
 
-const MAX_PER_BUCKET = 12;
+const MAX_PER_BUCKET = 16;
 
 const EMPTY_SIGNALS: ContextSignals = {
   projectDecisions: [],
@@ -21,7 +32,32 @@ const EMPTY_SIGNALS: ContextSignals = {
   architectureNotes: [],
   todosFollowups: [],
   toolingWorkflow: [],
+  securityRequirements: [],
 };
+
+// Patterns that indicate high-confidence explicit constraints
+const EXPLICIT_CONSTRAINT_PATTERNS = [
+  /\b(?:only|exclusively|must|always|never|required|mandatory|do not|don't|shall not|forbidden)\b/i,
+  /\b(?:restricted to|limited to|nothing (?:else|other)|no other)\b/i,
+];
+
+// Patterns for architectural decisions
+const ARCHITECTURE_DECISION_PATTERNS = [
+  /\b(?:we (?:chose|decided|picked|went with|use)|architecture|stack is|built (?:on|with)|monorepo|microservice|modular)\b/i,
+  /\b(?:data ?flow|event[ -]driven|pub[ -]?sub|cqrs|ddd|hexagonal|clean architecture|layered)\b/i,
+];
+
+// Patterns for coding conventions
+const CONVENTION_PATTERNS = [
+  /\b(?:convention|naming|style guide|linter|formatter|eslint|prettier|biome|import order|camelCase|snake_case|PascalCase)\b/i,
+  /\b(?:strict mode|no-any|readonly|immutable|functional style|prefer const|arrow function)\b/i,
+];
+
+// Patterns for security requirements
+const SECURITY_PATTERNS = [
+  /\b(?:security|auth|token|secret|encrypt|sign|verify|permission|rbac|acl|cors|csrf|xss|injection|sanitiz|validat)\b/i,
+  /\b(?:private key|seed phrase|mnemonic|wallet|credential|api[ -]?key|bearer)\b/i,
+];
 
 export function parseContextMarkdown(fileName: string, content: string): ParsedContextFile {
   const normalized = content.replace(/\r\n/g, "\n");
@@ -34,7 +70,10 @@ export function parseContextMarkdown(fileName: string, content: string): ParsedC
     architectureNotes: [],
     todosFollowups: [],
     toolingWorkflow: [],
+    securityRequirements: [],
   };
+
+  const weighted: WeightedSignal[] = [];
 
   const sections = splitIntoSections(lines);
   for (const section of sections) {
@@ -50,16 +89,58 @@ export function parseContextMarkdown(fileName: string, content: string): ParsedC
       const forcedBucket = bucketFromHeading(hint);
       const bucket = forcedBucket ?? bucketFromText(text);
       if (!bucket) continue;
+
+      const confidence = scoreConfidence(text, hint, kind, forcedBucket !== null);
       pushUnique(signals[bucket], text, MAX_PER_BUCKET);
+      weighted.push({ text, confidence, bucket, source: section.heading });
     }
   }
+
+  // Sort weighted signals: high first, then medium, then low
+  weighted.sort((a, b) => confidenceRank(a.confidence) - confidenceRank(b.confidence));
 
   return {
     fileName,
     kind,
     signals,
+    weighted,
     excerpt: normalized.slice(0, 10000),
   };
+}
+
+function confidenceRank(c: SignalConfidence): number {
+  return c === "high" ? 0 : c === "medium" ? 1 : 2;
+}
+
+function scoreConfidence(
+  text: string,
+  heading: string,
+  kind: "session-export" | "markdown",
+  headingMatched: boolean,
+): SignalConfidence {
+  let score = 0;
+
+  // Explicit constraints are highest signal
+  if (EXPLICIT_CONSTRAINT_PATTERNS.some((p) => p.test(text))) score += 3;
+
+  // Heading-matched items are more trustworthy
+  if (headingMatched) score += 2;
+
+  // Session exports with decision language are strong
+  if (kind === "session-export" && /\b(?:decid|agreed|chose|go with|we will|we'll)\b/i.test(text)) score += 2;
+
+  // Security requirements always get a boost
+  if (SECURITY_PATTERNS.some((p) => p.test(text))) score += 1;
+
+  // Architecture decisions get a boost
+  if (ARCHITECTURE_DECISION_PATTERNS.some((p) => p.test(text))) score += 1;
+
+  // Short vague items penalized
+  if (text.length < 30) score -= 1;
+
+  if (score >= 3) return "high";
+  if (score >= 1) return "medium";
+  return "low";
 }
 
 export function mergeContextSignals(items: ContextSignals[]): ContextSignals {
@@ -69,12 +150,13 @@ export function mergeContextSignals(items: ContextSignals[]): ContextSignals {
     architectureNotes: [],
     todosFollowups: [],
     toolingWorkflow: [],
+    securityRequirements: [],
   };
 
   for (const item of items) {
     for (const key of Object.keys(merged) as Array<keyof ContextSignals>) {
-      for (const line of item[key]) {
-        pushUnique(merged[key], line, 20);
+      for (const line of item[key] ?? []) {
+        pushUnique(merged[key], line, 24);
       }
     }
   }
@@ -86,14 +168,31 @@ export function hasContextSignals(signals: ContextSignals): boolean {
   return (Object.values(signals).flat().length > 0);
 }
 
-export function formatSignalsForPrompt(signals: ContextSignals): string {
+export function formatSignalsForPrompt(signals: ContextSignals, weighted?: WeightedSignal[]): string {
   if (!hasContextSignals(signals)) return "";
 
-  const block: string[] = ["## Extracted Context Signals"]; 
+  const block: string[] = [];
+
+  // High-confidence directives get a special top section
+  const highConfidence = weighted?.filter((w) => w.confidence === "high") ?? [];
+  if (highConfidence.length > 0) {
+    block.push("## ⚠️ CRITICAL Project Directives (from context files — these override repo scan inferences)");
+    block.push("");
+    block.push("The following constraints were explicitly stated by the developer and MUST be respected:");
+    block.push("");
+    for (const w of highConfidence.slice(0, 15)) {
+      block.push(`- **[${w.bucket}]** ${w.text}`);
+    }
+    block.push("");
+  }
+
+  // Then the full structured signals
+  block.push("## Extracted Context Signals");
   const sections: Array<[string, keyof ContextSignals]> = [
     ["Project decisions", "projectDecisions"],
     ["Coding conventions", "codingConventions"],
     ["Architecture notes", "architectureNotes"],
+    ["Security requirements", "securityRequirements"],
     ["TODOs / follow-ups", "todosFollowups"],
     ["Preferred tooling / workflow", "toolingWorkflow"],
   ];
@@ -101,10 +200,41 @@ export function formatSignalsForPrompt(signals: ContextSignals): string {
   for (const [label, key] of sections) {
     if (!signals[key].length) continue;
     block.push(`\n### ${label}`);
-    block.push(...signals[key].slice(0, 12).map((v) => `- ${v}`));
+    block.push(...signals[key].slice(0, 14).map((v) => `- ${v}`));
   }
 
   return block.join("\n");
+}
+
+/**
+ * Log a summary of the top extracted directives that were actually applied.
+ */
+export function logAppliedDirectives(weighted: WeightedSignal[], log: (msg: string) => void): void {
+  const high = weighted.filter((w) => w.confidence === "high");
+  const medium = weighted.filter((w) => w.confidence === "medium");
+
+  if (high.length === 0 && medium.length === 0) return;
+
+  log(`  Context weighting: ${high.length} high-confidence, ${medium.length} medium-confidence directives`);
+  for (const w of high.slice(0, 5)) {
+    log(`    ▸ [HIGH/${w.bucket}] ${w.text.slice(0, 120)}`);
+  }
+  for (const w of medium.slice(0, 3)) {
+    log(`    ▸ [MED/${w.bucket}] ${w.text.slice(0, 100)}`);
+  }
+}
+
+/**
+ * Check if a path looks like a context file (not a repo path).
+ * Context files should never be treated as repo scan targets.
+ */
+export function isContextFilePath(path: string): boolean {
+  // Context files are typically absolute or home-relative markdown/text files
+  // passed via --context flag. They should NOT be fed to the repo scanner.
+  const normalized = path.replace(/\\/g, "/");
+  // Heuristic: exported sessions, docs, notes — markdown files outside typical repo roots
+  if (/\.(md|markdown|txt|log)$/i.test(normalized)) return true;
+  return false;
 }
 
 function looksLikeSessionExport(lines: string[]): boolean {
@@ -169,6 +299,7 @@ function bucketFromHeading(heading: string): keyof ContextSignals | null {
   if (/(architecture|design|module|structure|data flow)/i.test(heading)) return "architectureNotes";
   if (/(todo|follow|next step|action item|backlog)/i.test(heading)) return "todosFollowups";
   if (/(tool|workflow|process|ci|build|deploy|devex)/i.test(heading)) return "toolingWorkflow";
+  if (/(security|auth|permission|access control|crypto)/i.test(heading)) return "securityRequirements";
   return null;
 }
 
@@ -179,6 +310,7 @@ function bucketFromText(text: string): keyof ContextSignals | null {
   if (/(\barchitecture|layer|module|service|pipeline|data flow|component|directory structure\b)/.test(t)) return "architectureNotes";
   if (/(\btodo|follow[- ]?up|next step|action item|pending|fixme\b)/.test(t)) return "todosFollowups";
   if (/(\bworkflow|tooling|cli|script|build step|ci|deploy|release process|preferred tool\b)/.test(t)) return "toolingWorkflow";
+  if (/(\bsecurity|auth|token|secret|encrypt|permission|rbac|cors|csrf|xss|injection|sanitiz\b)/.test(t)) return "securityRequirements";
   return null;
 }
 
@@ -200,5 +332,12 @@ function pushUnique(target: string[], value: string, max: number): void {
 }
 
 export function emptySignals(): ContextSignals {
-  return { ...EMPTY_SIGNALS, projectDecisions: [], codingConventions: [], architectureNotes: [], todosFollowups: [], toolingWorkflow: [] };
+  return {
+    projectDecisions: [],
+    codingConventions: [],
+    architectureNotes: [],
+    todosFollowups: [],
+    toolingWorkflow: [],
+    securityRequirements: [],
+  };
 }

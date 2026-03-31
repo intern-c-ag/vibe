@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 
 import type { GeneratedSkill } from "./generator.js";
 import type { FileEntry, ProjectContext } from "./deep-scanner.js";
+import type { WeightedSignal } from "./context-parser.js";
 
 const MAX_EXAMPLE_CHARS = 420;
 
@@ -46,7 +47,29 @@ function codeFence(file: FileEntry): string {
   return `### ${file.path}\n\n\`\`\`${lang}\n${snippet}\n\`\`\``;
 }
 
-function domainSkill(ctx: ProjectContext): SkillDraft {
+function buildDirectivesBlock(weighted?: WeightedSignal[]): string {
+  if (!weighted?.length) return "";
+  const high = weighted.filter((w) => w.confidence === "high");
+  const medium = weighted.filter((w) => w.confidence === "medium");
+  if (high.length === 0 && medium.length === 0) return "";
+
+  const lines: string[] = ["\n## Project Directives (from context files)\n"];
+  if (high.length > 0) {
+    lines.push("**Critical constraints (must be respected):**");
+    for (const w of high.slice(0, 10)) {
+      lines.push(`- ${w.text}`);
+    }
+  }
+  if (medium.length > 0) {
+    lines.push("\n**Additional guidance:**");
+    for (const w of medium.slice(0, 8)) {
+      lines.push(`- ${w.text}`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
+function domainSkill(ctx: ProjectContext, directives = ""): SkillDraft {
   const readme = ctx.docs.find((d) => /^readme/i.test(basename(d.path)));
   const examples = pickExamples([...ctx.docs, ...ctx.references, ...ctx.sourceFiles], 3);
 
@@ -54,11 +77,11 @@ function domainSkill(ctx: ProjectContext): SkillDraft {
     suffix: "domain",
     category: "domain",
     description: `Domain map and terminology for ${ctx.name}`,
-    markdown: `# ${ctx.name} Domain Guide\n\n## Description\n${clip(ctx.identity.replace(/\n+/g, " "), 380)}\n\n## Patterns\n- Primary languages: ${ctx.stack.languages.join(", ") || "unknown"}\n- Framework/runtime footprint: ${ctx.stack.frameworks.join(", ") || "none detected"} (runtime: ${ctx.stack.runtime || "unknown"})\n- Product/domain language should follow top-level docs first (${readme?.path ?? "README not found"}).\n\n## Conventions\n- Keep business terms aligned with names already used in docs and manifests.\n- Prefer extending existing feature directories before adding new top-level folders.\n- Reuse shared utilities from existing modules before introducing duplicates.\n\n## Anti-Patterns\n- Introducing new domain terms that conflict with README naming.\n- Re-implementing behavior already documented in references/examples.\n- Splitting one workflow across unrelated directories without a clear boundary.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${readme?.path ?? "README.md (missing)"}`,
+    markdown: `# ${ctx.name} Domain Guide\n\n## Description\n${clip(ctx.identity.replace(/\n+/g, " "), 380)}${directives}\n\n## Patterns\n- Primary languages: ${ctx.stack.languages.join(", ") || "unknown"}\n- Framework/runtime footprint: ${ctx.stack.frameworks.join(", ") || "none detected"} (runtime: ${ctx.stack.runtime || "unknown"})\n- Product/domain language should follow top-level docs first (${readme?.path ?? "README not found"}).\n\n## Conventions\n- Keep business terms aligned with names already used in docs and manifests.\n- Prefer extending existing feature directories before adding new top-level folders.\n- Reuse shared utilities from existing modules before introducing duplicates.\n\n## Anti-Patterns\n- Introducing new domain terms that conflict with README naming.\n- Re-implementing behavior already documented in references/examples.\n- Splitting one workflow across unrelated directories without a clear boundary.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${readme?.path ?? "README.md (missing)"}`,
   };
 }
 
-function architectureSkill(ctx: ProjectContext): SkillDraft {
+function architectureSkill(ctx: ProjectContext, directives = ""): SkillDraft {
   const examples = pickExamples(ctx.sourceFiles, 3);
   const structure = ctx.structure.slice(0, 12).map((p) => `- ${p}`).join("\n") || "- (structure unavailable)";
 
@@ -66,22 +89,22 @@ function architectureSkill(ctx: ProjectContext): SkillDraft {
     suffix: "architecture",
     category: "architecture",
     description: `Architecture and module boundaries for ${ctx.name}`,
-    markdown: `# ${ctx.name} Architecture\n\n## Description\nHow this repository is organized and where to extend code safely.\n\n## Patterns\n- Existing directory map (top paths):\n${structure}\n- Keep layers cohesive: docs/manifests define contracts; source files implement behavior.\n- Prefer flow-aligned modules over generic utility buckets.\n\n## Conventions\n- Follow nearest-neighbor placement: new files should sit next to related modules.\n- Preserve path depth patterns already present in ${ctx.name}.\n- Update both source and docs when changing cross-cutting behavior.\n\n## Anti-Patterns\n- Creating new top-level folders for one-off logic.\n- Circular module references across distant directories.\n- Mixing infra/config logic directly into domain modules without boundaries.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.slice(0, 5).map((m) => m.path).join("\n- ") || "No manifests detected"}`,
+    markdown: `# ${ctx.name} Architecture\n\n## Description\nHow this repository is organized and where to extend code safely.${directives}\n\n## Patterns\n- Existing directory map (top paths):\n${structure}\n- Keep layers cohesive: docs/manifests define contracts; source files implement behavior.\n- Prefer flow-aligned modules over generic utility buckets.\n\n## Conventions\n- Follow nearest-neighbor placement: new files should sit next to related modules.\n- Preserve path depth patterns already present in ${ctx.name}.\n- Update both source and docs when changing cross-cutting behavior.\n\n## Anti-Patterns\n- Creating new top-level folders for one-off logic.\n- Circular module references across distant directories.\n- Mixing infra/config logic directly into domain modules without boundaries.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.slice(0, 5).map((m) => m.path).join("\n- ") || "No manifests detected"}`,
   };
 }
 
-function conventionsSkill(ctx: ProjectContext): SkillDraft {
+function conventionsSkill(ctx: ProjectContext, directives = ""): SkillDraft {
   const examples = pickExamples(ctx.sourceFiles, 3);
 
   return {
     suffix: "conventions",
     category: "conventions",
     description: `Code style and naming conventions for ${ctx.name}`,
-    markdown: `# ${ctx.name} Coding Conventions\n\n## Description\nConcrete coding conventions observed in this repository.\n\n## Patterns\n- Keep naming and export style consistent with nearby modules.\n- Preserve import grouping/order used by existing files.\n- Keep modules focused on one cohesive concern.\n\n## Conventions\n- Match quote/semicolon/comma style from surrounding code.\n- Keep declarations and guard clauses readable and shallow.\n- Prefer existing utility abstractions over ad-hoc duplication.\n\n## Anti-Patterns\n- Mixed naming styles within the same module.\n- Formatter drift from existing project conventions.\n- Copy/paste logic without extraction when repetition appears.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.filter((m) => /eslint|biome|prettier|tsconfig|package\.json/i.test(m.path)).slice(0, 5).map((m) => m.path).join("\n- ") || "No formatter/linter config detected"}`,
+    markdown: `# ${ctx.name} Coding Conventions\n\n## Description\nConcrete coding conventions observed in this repository.${directives}\n\n## Patterns\n- Keep naming and export style consistent with nearby modules.\n- Preserve import grouping/order used by existing files.\n- Keep modules focused on one cohesive concern.\n\n## Conventions\n- Match quote/semicolon/comma style from surrounding code.\n- Keep declarations and guard clauses readable and shallow.\n- Prefer existing utility abstractions over ad-hoc duplication.\n\n## Anti-Patterns\n- Mixed naming styles within the same module.\n- Formatter drift from existing project conventions.\n- Copy/paste logic without extraction when repetition appears.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.filter((m) => /eslint|biome|prettier|tsconfig|package\.json/i.test(m.path)).slice(0, 5).map((m) => m.path).join("\n- ") || "No formatter/linter config detected"}`,
   };
 }
 
-function securitySkill(ctx: ProjectContext): SkillDraft {
+function securitySkill(ctx: ProjectContext, directives = ""): SkillDraft {
   const sensitive = [
     ...ctx.sourceFiles.filter((f) => /(auth|token|secret|password|crypto|sign|verify|permission|role|acl|middleware)/i.test(f.path)),
     ...ctx.manifests.filter((f) => /(docker|compose|package\.json|cargo\.toml|pyproject|go\.mod|\.env)/i.test(f.path)),
@@ -92,7 +115,7 @@ function securitySkill(ctx: ProjectContext): SkillDraft {
     suffix: "security",
     category: "security",
     description: `Security guardrails derived from ${ctx.name}`,
-    markdown: `# ${ctx.name} Security\n\n## Description\nSecurity considerations grounded in this repository's real paths and dependency surface.\n\n## Patterns\n- Validate untrusted inputs at boundaries (API handlers, CLI args, env parsing).\n- Prefer explicit allow-lists and typed validation over implicit coercion.\n- Keep credentials out of source; use environment/config injection.\n\n## Conventions\n- Security-sensitive changes should include a test or reproducible check.\n- Pin and audit dependency updates in manifest files before release.\n- Keep permission checks close to entry points, not buried in helpers.\n\n## Anti-Patterns\n- Logging secrets/tokens or full sensitive payloads.\n- Trusting client-provided flags without server-side verification.\n- Expanding permission scope without least-privilege review.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.slice(0, 5).map((m) => m.path).join("\n- ") || "No manifests detected"}`,
+    markdown: `# ${ctx.name} Security\n\n## Description\nSecurity considerations grounded in this repository's real paths and dependency surface.${directives}\n\n## Patterns\n- Validate untrusted inputs at boundaries (API handlers, CLI args, env parsing).\n- Prefer explicit allow-lists and typed validation over implicit coercion.\n- Keep credentials out of source; use environment/config injection.\n\n## Conventions\n- Security-sensitive changes should include a test or reproducible check.\n- Pin and audit dependency updates in manifest files before release.\n- Keep permission checks close to entry points, not buried in helpers.\n\n## Anti-Patterns\n- Logging secrets/tokens or full sensitive payloads.\n- Trusting client-provided flags without server-side verification.\n- Expanding permission scope without least-privilege review.\n\n## Examples\n${examples.map(codeFence).join("\n\n")}\n\n## References\n- ${ctx.manifests.slice(0, 5).map((m) => m.path).join("\n- ") || "No manifests detected"}`,
   };
 }
 
@@ -112,11 +135,12 @@ export async function generateSkillsFromLocalContext(
   ctx: ProjectContext,
   outputDir: string,
   repoName: string,
-  _signals?: unknown,
+  weightedSignals?: WeightedSignal[],
   categories?: Array<"domain" | "architecture" | "conventions" | "security" | "testing">,
 ): Promise<GeneratedSkill[]> {
   const base = toKebab(repoName || ctx.name || "repo");
-  const allDrafts = [domainSkill(ctx), architectureSkill(ctx), conventionsSkill(ctx), securitySkill(ctx), testingSkill(ctx)];
+  const directivesBlock = buildDirectivesBlock(weightedSignals);
+  const allDrafts = [domainSkill(ctx, directivesBlock), architectureSkill(ctx, directivesBlock), conventionsSkill(ctx, directivesBlock), securitySkill(ctx, directivesBlock), testingSkill(ctx)];
   const drafts = categories?.length ? allDrafts.filter((d) => categories.includes(d.category)) : allDrafts;
   const out: GeneratedSkill[] = [];
 
